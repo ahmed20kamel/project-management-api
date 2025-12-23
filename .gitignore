@@ -1,0 +1,9 @@
+# env
+.env
+
+# python
+__pycache__/
+*.pyc
+
+# data dumps
+data.json
