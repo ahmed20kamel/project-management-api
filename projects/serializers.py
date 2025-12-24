@@ -1645,7 +1645,7 @@ class ContractSerializer(serializers.ModelSerializer):
                                 logger.info(f"✅ Linked file to attachments_parsed[{idx}]: {file_obj.name if file_obj else 'None'}")
                             else:
                                 logger.warning(f"⚠️ Attachment index {idx} out of range (len={len(attachments_parsed)})")
-                        else:
+                        # ✅ إذا لم يكن match، نتجاهل الملف (ليس attachment)
             except Exception as e:
                 logger.warning(f"Error extracting attachment files: {e}", exc_info=True)
         

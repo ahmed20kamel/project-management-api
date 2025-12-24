@@ -25,6 +25,43 @@ ALLOWED_HOSTS = [
 ]
 
 # =========================
+# Cache Configuration (يجب أن يكون قبل INSTALLED_APPS)
+# =========================
+REDIS_URL = os.getenv("REDIS_URL", None)
+
+if REDIS_URL:
+    # ✅ استخدام Redis إذا كان متاحاً
+    CACHES = {
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": REDIS_URL,
+            "OPTIONS": {
+                "CLIENT_CLASS": "django_redis.client.DefaultClient",
+                "PARSER_CLASS": "redis.connection.HiredisParser",
+                "CONNECTION_POOL_KWARGS": {
+                    "max_connections": 50,
+                    "retry_on_timeout": True,
+                },
+                "COMPRESSOR": "django_redis.compressors.zlib.ZlibCompressor",
+                "IGNORE_EXCEPTIONS": True,  # لا نرفع استثناء إذا فشل cache
+            },
+            "KEY_PREFIX": "project_mgmt",
+            "TIMEOUT": 300,  # 5 minutes default
+        }
+    }
+    USE_REDIS = True
+else:
+    # ✅ استخدام memory cache كبديل إذا لم يكن Redis متاحاً
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "unique-snowflake",
+            "TIMEOUT": 300,
+        }
+    }
+    USE_REDIS = False
+
+# =========================
 # Installed Apps
 # =========================
 INSTALLED_APPS = [
@@ -38,11 +75,16 @@ INSTALLED_APPS = [
     "rest_framework",
     "rest_framework_simplejwt",
     "corsheaders",
-    "django_ratelimit",  # ✅ Rate limiting
+]
 
+# ✅ إضافة django_ratelimit فقط إذا كان Redis متاحاً
+if USE_REDIS:
+    INSTALLED_APPS.append("django_ratelimit")
+
+INSTALLED_APPS.extend([
     "projects.apps.ProjectsConfig",  # ✅ استخدام AppConfig للتأكد من تحميل signals
     "authentication.apps.AuthenticationConfig",  # Authentication app
-]
+])
 
 # =========================
 # Middleware (الترتيب مهم)
@@ -107,40 +149,7 @@ DATABASES = {
     }
 }
 
-# =========================
-# Cache Configuration
-# =========================
-REDIS_URL = os.getenv("REDIS_URL", None)
-
-if REDIS_URL:
-    # ✅ استخدام Redis إذا كان متاحاً
-    CACHES = {
-        "default": {
-            "BACKEND": "django_redis.cache.RedisCache",
-            "LOCATION": REDIS_URL,
-            "OPTIONS": {
-                "CLIENT_CLASS": "django_redis.client.DefaultClient",
-                "PARSER_CLASS": "redis.connection.HiredisParser",
-                "CONNECTION_POOL_KWARGS": {
-                    "max_connections": 50,
-                    "retry_on_timeout": True,
-                },
-                "COMPRESSOR": "django_redis.compressors.zlib.ZlibCompressor",
-                "IGNORE_EXCEPTIONS": True,  # لا نرفع استثناء إذا فشل cache
-            },
-            "KEY_PREFIX": "project_mgmt",
-            "TIMEOUT": 300,  # 5 minutes default
-        }
-    }
-else:
-    # ✅ استخدام memory cache كبديل إذا لم يكن Redis متاحاً
-    CACHES = {
-        "default": {
-            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-            "LOCATION": "unique-snowflake",
-            "TIMEOUT": 300,
-        }
-    }
+# ✅ Cache Configuration تم نقله قبل INSTALLED_APPS
 
 
 # =========================

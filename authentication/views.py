@@ -8,8 +8,20 @@ from django.contrib.auth import authenticate
 from django.utils import timezone
 from django.db.models import Q
 from django.core.cache import cache
-from django_ratelimit.decorators import ratelimit
+from django.conf import settings
 from rest_framework import serializers as drf_serializers
+
+# ✅ استيراد ratelimit فقط إذا كان متاحاً
+try:
+    from django_ratelimit.decorators import ratelimit
+    RATELIMIT_AVAILABLE = True
+except ImportError:
+    RATELIMIT_AVAILABLE = False
+    # ✅ إنشاء decorator وهمي إذا لم يكن django_ratelimit متاحاً
+    def ratelimit(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
 
 from .models import User, Role, Permission, WorkflowStage, WorkflowRule, AuditLog, Tenant, TenantSettings, PendingChange
 from .serializers import (
@@ -29,9 +41,15 @@ from .utils import (
 
 
 # ====== Company Registration View ======
+def _apply_rate_limit_if_available(func):
+    """Apply rate limiting decorator only if django_ratelimit is available"""
+    if RATELIMIT_AVAILABLE:
+        return ratelimit(key='ip', rate='5/h', method='POST')(func)
+    return func
+
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
-@ratelimit(key='ip', rate='5/h', method='POST')  # ✅ Rate limiting: 5 requests per hour per IP
+@_apply_rate_limit_if_available  # ✅ Rate limiting: 5 requests per hour per IP (إذا كان متاحاً)
 def register_company(request):
     """
     تسجيل شركة جديدة مع المستخدم المسؤول
@@ -501,10 +519,26 @@ class TenantSettingsViewSet(viewsets.ModelViewSet):
 # ====== Custom JWT Token View ======
 class CustomTokenObtainPairView(TokenObtainPairView):
     """
-    Custom JWT Token Obtain View with rate limiting
+    Custom JWT Token Obtain View with rate limiting (if available)
     """
-    @ratelimit(key='ip', rate='10/m', method='POST')  # ✅ 10 requests per minute per IP
     def post(self, request, *args, **kwargs):
+        # ✅ Rate limiting يدوي (إذا لم يكن django_ratelimit متاحاً)
+        if not RATELIMIT_AVAILABLE:
+            # ✅ تطبيق rate limiting بسيط باستخدام cache
+            ip = request.META.get('REMOTE_ADDR', request.META.get('HTTP_X_FORWARDED_FOR', 'unknown').split(',')[0].strip())
+            cache_key = f'login_rate_limit_{ip}'
+            attempts = cache.get(cache_key, 0)
+            
+            if attempts >= 10:  # 10 attempts per minute
+                return Response(
+                    {'error': 'Too many login attempts. Please try again later.'},
+                    status=status.HTTP_429_TOO_MANY_REQUESTS
+                )
+            
+            # زيادة العداد
+            cache.set(cache_key, attempts + 1, 60)  # 1 minute
+        
+        # ✅ المتابعة مع login العادي
         serializer = LoginSerializer(data=request.data)
         if serializer.is_valid():
             email = serializer.validated_data['email']
