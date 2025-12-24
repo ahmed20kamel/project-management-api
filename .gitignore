@@ -1,9 +1,21 @@
 # env
 .env
 
-# python
+# Python
+venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 
-# data dumps
+# Django
+db.sqlite3
+media/
+staticfiles/
+
+# Data dumps
 data.json
+
+# OS
+.DS_Store
+Thumbs.db

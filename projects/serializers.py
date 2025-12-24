@@ -1,6 +1,9 @@
 import re
 import json
+import logging
 from django.db import models
+from django.conf import settings
+from django.core.files.storage import default_storage
 from rest_framework import serializers
 from .models import (
     Project, SitePlan, SitePlanOwner, BuildingLicense, Contract, Awarding, Payment,
@@ -13,6 +16,105 @@ try:
 except ImportError:
     WorkflowStage = None
 
+logger = logging.getLogger(__name__)
+
+# =========================
+# Helper Functions - Unified File URL Handling
+# =========================
+def get_file_url(file_field, request=None):
+    """
+    دالة موحدة لإرجاع URL الملف بشكل متسق
+    ترجع مسار نسبي بدون /media/ لاستخدامه مع /api/files/
+    
+    Args:
+        file_field: Django FileField أو ImageField
+        request: Request object (اختياري) لبناء absolute URL
+    
+    Returns:
+        str: URL الملف (نسبي أو مطلق حسب request)
+    """
+    if not file_field:
+        return None
+    
+    try:
+        # ✅ الحصول على URL من Django storage
+        if hasattr(file_field, 'url'):
+            url = file_field.url
+        elif hasattr(file_field, 'name'):
+            # إذا كان FileField لكن بدون url، نستخدم name
+            url = default_storage.url(file_field.name)
+        else:
+            url = str(file_field)
+        
+        if not url:
+            return None
+        
+        # ✅ إزالة /media/ من البداية إذا كان موجوداً (لتوحيد المسارات)
+        if url.startswith('/media/'):
+            url = url[7:]  # إزالة "/media/"
+        elif url.startswith('media/'):
+            url = url[6:]  # إزالة "media/"
+        
+        # ✅ إزالة MEDIA_URL من البداية إذا كان موجوداً
+        media_url = getattr(settings, 'MEDIA_URL', '/media/')
+        if media_url and url.startswith(media_url.lstrip('/')):
+            url = url[len(media_url.lstrip('/')):]
+        
+        # ✅ إذا كان request موجوداً، يمكن بناء absolute URL
+        # لكن في حالتنا نفضل المسار النسبي لاستخدامه مع /api/files/
+        # إذا أراد المستخدم absolute URL، يمكنه استخدام request.build_absolute_uri()
+        
+        return url
+        
+    except Exception as e:
+        logger.warning(f"Error getting file URL: {e}", exc_info=True)
+        return None
+
+
+def normalize_file_url(url):
+    """
+    توحيد مسار الملف - إزالة /media/ والمسارات المطلقة
+    
+    Args:
+        url: URL الملف (قد يكون مطلق أو نسبي)
+    
+    Returns:
+        str: مسار موحد نسبي
+    """
+    if not url or not isinstance(url, str):
+        return None
+    
+    url = url.strip()
+    if not url:
+        return None
+    
+    # ✅ إزالة /media/ من البداية
+    if url.startswith('/media/'):
+        url = url[7:]
+    elif url.startswith('media/'):
+        url = url[6:]
+    
+    # ✅ إزالة MEDIA_URL من البداية
+    media_url = getattr(settings, 'MEDIA_URL', '/media/')
+    if media_url and url.startswith(media_url.lstrip('/')):
+        url = url[len(media_url.lstrip('/')):]
+    
+    # ✅ إزالة المسار المطلق إذا كان موجوداً
+    if url.startswith('http://') or url.startswith('https://'):
+        # استخراج المسار النسبي من URL المطلق
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        url = parsed.path
+        if url.startswith('/media/'):
+            url = url[7:]
+        elif url.startswith('media/'):
+            url = url[6:]
+    
+    # ✅ إزالة / من البداية
+    url = url.lstrip('/')
+    
+    return url if url else None
+
 # =========================
 # Helpers (snapshots)
 # =========================
@@ -22,13 +124,8 @@ def build_siteplan_snapshot(sp: SitePlan):
     try:
         for o in sp.owners.all().order_by("id"):
             try:
-                # ✅ معالجة آمنة لـ id_attachment
-                id_attachment_url = None
-                if hasattr(o, 'id_attachment') and o.id_attachment:
-                    try:
-                        id_attachment_url = o.id_attachment.url if hasattr(o.id_attachment, 'url') else None
-                    except Exception:
-                        id_attachment_url = None
+                # ✅ استخدام الدالة الموحدة للحصول على URL
+                id_attachment_url = get_file_url(getattr(o, 'id_attachment', None))
                 
                 owner_data = {
                     "owner_name_ar": getattr(o, 'owner_name_ar', ''),
@@ -48,26 +145,14 @@ def build_siteplan_snapshot(sp: SitePlan):
                 }
                 owners.append(owner_data)
             except Exception as e:
-                import logging
-                logger = logging.getLogger(__name__)
                 logger.warning(f"Error building snapshot for owner {getattr(o, 'id', 'unknown')}: {e}")
                 # ✅ تخطي المالك الذي به خطأ والمتابعة
                 continue
     except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
         logger.error(f"Error building owners snapshot for SitePlan {getattr(sp, 'id', 'unknown')}: {e}", exc_info=True)
         owners = []  # ✅ قائمة فارغة في حالة الخطأ
-    # ✅ معالجة آمنة لـ application_file
-    application_file_url = None
-    try:
-        if hasattr(sp, 'application_file') and sp.application_file:
-            application_file_url = sp.application_file.url if hasattr(sp.application_file, 'url') else None
-    except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.warning(f"Error accessing application_file for SitePlan {getattr(sp, 'id', 'unknown')}: {e}")
-        application_file_url = None
+    # ✅ استخدام الدالة الموحدة للحصول على URL
+    application_file_url = get_file_url(getattr(sp, 'application_file', None))
     
     return {
         "property": {
@@ -117,7 +202,7 @@ def build_license_snapshot(lic: BuildingLicense):
             "technical_decision_ref": getattr(lic, "technical_decision_ref", ""),
             "technical_decision_date": lic.technical_decision_date.isoformat() if getattr(lic, "technical_decision_date", None) else None,
             "license_notes": getattr(lic, "license_notes", ""),
-            "building_license_file": lic.building_license_file.url if getattr(lic, "building_license_file", None) else None,
+            "building_license_file": get_file_url(getattr(lic, "building_license_file", None)),
         },
         "land": {
             "city": getattr(lic, "city", ""),
@@ -340,20 +425,9 @@ class SitePlanOwnerSerializer(serializers.ModelSerializer):
             if "is_authorized" not in data:
                 data["is_authorized"] = instance.is_authorized if hasattr(instance, 'is_authorized') else False
             
-            # ✅ معالجة آمنة لـ id_attachment
-            if "id_attachment" in data and data["id_attachment"]:
-                try:
-                    # التحقق من أن الملف موجود فعلياً
-                    if hasattr(instance, 'id_attachment') and instance.id_attachment:
-                        # استخدام URL الملف إذا كان موجوداً
-                        data["id_attachment"] = instance.id_attachment.url if hasattr(instance.id_attachment, 'url') else str(instance.id_attachment)
-                    else:
-                        data["id_attachment"] = None
-                except Exception as e:
-                    import logging
-                    logger = logging.getLogger(__name__)
-                    logger.warning(f"Error accessing id_attachment for owner {instance.id}: {e}")
-                    data["id_attachment"] = None
+            # ✅ استخدام الدالة الموحدة لـ id_attachment
+            if "id_attachment" in data:
+                data["id_attachment"] = get_file_url(getattr(instance, 'id_attachment', None))
             
             return data
         except Exception as e:
@@ -468,22 +542,9 @@ class SitePlanSerializer(serializers.ModelSerializer):
         try:
             data = super().to_representation(instance)
             
-            # ✅ معالجة آمنة لـ application_file
-            if "application_file" in data and data["application_file"]:
-                try:
-                    if hasattr(instance, 'application_file') and instance.application_file:
-                        # التحقق من أن الملف موجود فعلياً
-                        if hasattr(instance.application_file, 'url'):
-                            data["application_file"] = instance.application_file.url
-                        else:
-                            data["application_file"] = str(instance.application_file) if instance.application_file else None
-                    else:
-                        data["application_file"] = None
-                except Exception as e:
-                    import logging
-                    logger = logging.getLogger(__name__)
-                    logger.warning(f"Error accessing application_file for SitePlan {instance.id}: {e}")
-                    data["application_file"] = None
+            # ✅ استخدام الدالة الموحدة لـ application_file
+            if "application_file" in data:
+                data["application_file"] = get_file_url(getattr(instance, 'application_file', None))
             
             # ✅ معالجة آمنة للملاك
             if "owners" in data and isinstance(data["owners"], list):
@@ -1766,11 +1827,12 @@ class ContractSerializer(serializers.ModelSerializer):
                         from django.core.files.storage import default_storage
                         file_obj = ext["_file"]
                         file_path = default_storage.save(f"contracts/extensions/{obj.id}/{file_obj.name}", file_obj)
-                        ext_dict["file_url"] = default_storage.url(file_path)
+                        # ✅ توحيد المسار باستخدام normalize_file_url
+                        ext_dict["file_url"] = normalize_file_url(default_storage.url(file_path))
                         ext_dict["file_name"] = file_obj.name
-                    # ✅ إذا كان هناك file_url موجود (من extension قديم)
+                    # ✅ إذا كان هناك file_url موجود (من extension قديم) - توحيده
                     elif ext.get("file_url"):
-                        ext_dict["file_url"] = ext.get("file_url")
+                        ext_dict["file_url"] = normalize_file_url(ext.get("file_url"))
                         ext_dict["file_name"] = ext.get("file_name")
                     saved_extensions.append(ext_dict)
                 obj.extensions = saved_extensions
@@ -1819,14 +1881,13 @@ class ContractSerializer(serializers.ModelSerializer):
                         from django.core.files.storage import default_storage
                         file_obj = att["_file"]
                         file_path = default_storage.save(f"contracts/attachments/{obj.id}/{file_obj.name}", file_obj)
-                        att_dict["file_url"] = default_storage.url(file_path)
+                        # ✅ توحيد المسار باستخدام normalize_file_url
+                        att_dict["file_url"] = normalize_file_url(default_storage.url(file_path))
                         att_dict["file_name"] = file_obj.name
-                        import logging
-                        logger = logging.getLogger(__name__)
                         logger.info(f"✅ Saved attachment[{idx}] file: {file_obj.name} -> {att_dict['file_url']}")
-                    # ✅ إذا كان هناك file_url موجود (من attachment قديم)
+                    # ✅ إذا كان هناك file_url موجود (من attachment قديم) - توحيده
                     elif att.get("file_url"):
-                        att_dict["file_url"] = att.get("file_url")
+                        att_dict["file_url"] = normalize_file_url(att.get("file_url"))
                         att_dict["file_name"] = att.get("file_name")
                     else:
                         import logging
@@ -1913,11 +1974,12 @@ class ContractSerializer(serializers.ModelSerializer):
                                 except:
                                     pass
                         file_path = default_storage.save(f"contracts/extensions/{updated.id}/{file_obj.name}", file_obj)
-                        ext_dict["file_url"] = default_storage.url(file_path)
+                        # ✅ توحيد المسار باستخدام normalize_file_url
+                        ext_dict["file_url"] = normalize_file_url(default_storage.url(file_path))
                         ext_dict["file_name"] = file_obj.name
-                    # ✅ إذا كان هناك file_url موجود (من extension قديم)
+                    # ✅ إذا كان هناك file_url موجود (من extension قديم) - توحيده
                     elif ext.get("file_url"):
-                        ext_dict["file_url"] = ext.get("file_url")
+                        ext_dict["file_url"] = normalize_file_url(ext.get("file_url"))
                         ext_dict["file_name"] = ext.get("file_name")
                     saved_extensions.append(ext_dict)
                 updated.extensions = saved_extensions
@@ -1988,12 +2050,13 @@ class ContractSerializer(serializers.ModelSerializer):
                                 except:
                                     pass
                         file_path = default_storage.save(f"contracts/attachments/{instance.id}/{file_obj.name}", file_obj)
-                        att_dict["file_url"] = default_storage.url(file_path)
+                        # ✅ توحيد المسار باستخدام normalize_file_url
+                        att_dict["file_url"] = normalize_file_url(default_storage.url(file_path))
                         att_dict["file_name"] = file_obj.name
                         logger.info(f"✅ Saved attachment[{idx}] file (update): {file_obj.name} -> {att_dict['file_url']}")
-                    # ✅ إذا كان هناك file_url موجود (من attachment قديم) ولم يكن هناك ملف جديد
+                    # ✅ إذا كان هناك file_url موجود (من attachment قديم) ولم يكن هناك ملف جديد - توحيده
                     elif att.get("file_url"):
-                        att_dict["file_url"] = att.get("file_url")
+                        att_dict["file_url"] = normalize_file_url(att.get("file_url"))
                         att_dict["file_name"] = att.get("file_name")
                         logger.info(f"✅ Preserved attachment[{idx}] existing file (update): {att_dict['file_url']}")
                     else:
@@ -2089,12 +2152,12 @@ class VariationSerializer(serializers.ModelSerializer):
             return None
     
     def get_variation_invoice_file(self, obj):
-        if obj.variation_invoice_file:
+        """الحصول على رابط ملف فاتورة التعديل"""
+        url = get_file_url(getattr(obj, 'variation_invoice_file', None))
+        if url and self.context.get('request'):
             request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.variation_invoice_file.url)
-            return obj.variation_invoice_file.url
-        return None
+            return request.build_absolute_uri(f"/api/files/{url}")
+        return url
     
     def create(self, validated_data):
         """Auto-generate variation_number if not provided and calculate consultant_fees from percentage"""
@@ -2291,36 +2354,32 @@ class PaymentSerializer(serializers.ModelSerializer):
         read_only_fields = ["created_at", "updated_at", "actual_invoice_id"]
     
     def get_deposit_slip(self, obj):
-        if obj.deposit_slip:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.deposit_slip.url)
-            return obj.deposit_slip.url
-        return None
+        """الحصول على رابط Deposit Slip"""
+        url = get_file_url(getattr(obj, 'deposit_slip', None))
+        if url and self.context.get('request'):
+            return self.context.get('request').build_absolute_uri(f"/api/files/{url}")
+        return url
     
     def get_invoice_file(self, obj):
-        if obj.invoice_file:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.invoice_file.url)
-            return obj.invoice_file.url
-        return None
+        """الحصول على رابط Invoice File"""
+        url = get_file_url(getattr(obj, 'invoice_file', None))
+        if url and self.context.get('request'):
+            return self.context.get('request').build_absolute_uri(f"/api/files/{url}")
+        return url
     
     def get_receipt_voucher(self, obj):
-        if obj.receipt_voucher:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.receipt_voucher.url)
-            return obj.receipt_voucher.url
-        return None
+        """الحصول على رابط Receipt Voucher"""
+        url = get_file_url(getattr(obj, 'receipt_voucher', None))
+        if url and self.context.get('request'):
+            return self.context.get('request').build_absolute_uri(f"/api/files/{url}")
+        return url
     
     def get_bank_payment_attachments(self, obj):
-        if obj.bank_payment_attachments:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.bank_payment_attachments.url)
-            return obj.bank_payment_attachments.url
-        return None
+        """الحصول على رابط Bank Payment Attachments"""
+        url = get_file_url(getattr(obj, 'bank_payment_attachments', None))
+        if url and self.context.get('request'):
+            return self.context.get('request').build_absolute_uri(f"/api/files/{url}")
+        return url
     
     def get_actual_invoice_id(self, obj):
         """Get actual_invoice ID via reverse relationship"""
@@ -2425,12 +2484,10 @@ class ConsultantSerializer(serializers.ModelSerializer):
     
     def get_image_url(self, obj):
         """الحصول على رابط صورة الاستشاري"""
-        if obj.image:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.image.url)
-            return obj.image.url
-        return None
+        url = get_file_url(getattr(obj, 'image', None))
+        if url and self.context.get('request'):
+            return self.context.get('request').build_absolute_uri(f"/api/files/{url}")
+        return url
     
     def get_projects_count(self, obj):
         """عدد المشاريع المرتبطة"""

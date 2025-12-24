@@ -55,8 +55,25 @@ class ProjectViewSet(viewsets.ModelViewSet):
     serializer_class = ProjectSerializer
     
     def get_queryset(self):
-        """تصفية المشاريع حسب tenant المستخدم"""
+        """تصفية المشاريع حسب tenant المستخدم مع تحسين الأداء"""
         queryset = super().get_queryset()
+        
+        # ✅ تحسين الأداء: استخدام select_related و prefetch_related لتقليل عدد الاستعلامات
+        queryset = queryset.select_related(
+            'tenant',  # ForeignKey
+            'siteplan',  # OneToOne
+            'buildinglicense',  # OneToOne
+            'contract',  # OneToOne
+            'awarding',  # OneToOne
+            'current_stage',  # ForeignKey (WorkflowStage)
+        ).prefetch_related(
+            'payments',  # Reverse ForeignKey
+            'variations',  # Reverse ForeignKey
+            'actualinvoices',  # Reverse ForeignKey
+            'projectconsultant_set',  # Reverse ForeignKey
+            'projectconsultant_set__consultant',  # Nested prefetch
+            'siteplan__owners',  # Nested prefetch for SitePlan owners
+        )
         
         # إذا كان المستخدم superuser، يمكنه رؤية جميع المشاريع
         if self.request.user.is_superuser:
@@ -460,8 +477,14 @@ class _ProjectChildViewSet(viewsets.ModelViewSet):
         return get_object_or_404(Project, pk=self.kwargs["project_pk"])
 
     def get_queryset(self):
-        """تصفية البيانات حسب tenant المستخدم"""
+        """تصفية البيانات حسب tenant المستخدم مع تحسين الأداء"""
         queryset = self.queryset
+        
+        # ✅ تحسين الأداء: استخدام select_related لتقليل عدد الاستعلامات
+        if hasattr(queryset.model, 'project'):
+            queryset = queryset.select_related('project', 'project__tenant')
+        if hasattr(queryset.model, 'tenant'):
+            queryset = queryset.select_related('tenant')
         
         # تصفية حسب tenant
         if not self.request.user.is_superuser:
@@ -477,7 +500,7 @@ class _ProjectChildViewSet(viewsets.ModelViewSet):
         if project_pk:
             # التحقق من أن المشروع ينتمي لنفس tenant
             try:
-                project = Project.objects.get(pk=project_pk)
+                project = Project.objects.select_related('tenant').get(pk=project_pk)
                 if not self.request.user.is_superuser:
                     if hasattr(self.request, 'tenant') and self.request.tenant:
                         if project.tenant != self.request.tenant:
@@ -1025,73 +1048,143 @@ def download_file(request, file_path):
     Endpoint محمي لتحميل الملفات مع authentication
     يستقبل مسار الملف النسبي (مثل: contracts/main/file.pdf)
     ويرجع الملف مع authentication
+    يدعم المسارات القديمة والجديدة
     """
+    import logging
+    import urllib.parse
+    import mimetypes
+    
+    logger = logging.getLogger(__name__)
+    
     try:
         # ✅ تنظيف المسار لمنع directory traversal attacks
-        # إزالة أي محاولة للوصول إلى ملفات خارج media/
+        original_path = file_path
         file_path = file_path.lstrip('/')
         
         # ✅ فك ترميز URL (للتعامل مع الأحرف العربية)
-        import urllib.parse
         try:
             file_path = urllib.parse.unquote(file_path)
-        except:
+        except Exception as e:
+            logger.warning(f"Failed to decode URL path {original_path}: {e}")
             pass  # إذا فشل فك الترميز، نستخدم المسار كما هو
         
-        if '..' in file_path or file_path.startswith('/'):
+        # ✅ منع directory traversal
+        if '..' in file_path:
+            logger.warning(f"Directory traversal attempt detected: {original_path}")
             return Response(
                 {"detail": "Invalid file path"},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        
+        # ✅ تنظيف المسار من /media/ إذا كان موجوداً (دعم المسارات القديمة)
+        cleaned_paths = []
+        
+        # المسار الأصلي
+        cleaned_paths.append(file_path)
+        
+        # إزالة /media/ من البداية
+        if file_path.startswith('media/'):
+            cleaned_paths.append(file_path[6:])
+        if file_path.startswith('/media/'):
+            cleaned_paths.append(file_path[7:])
+        
+        # إزالة media/ بدون slash
+        if 'media/' in file_path:
+            idx = file_path.find('media/')
+            if idx >= 0:
+                cleaned_paths.append(file_path[idx + 6:])
         
         # ✅ بناء المسار الكامل للملف
         media_root = Path(settings.MEDIA_ROOT)
-        full_path = media_root / file_path
+        full_path = None
+        searched_paths = []
         
-        # ✅ التأكد من أن الملف موجود
-        if not full_path.exists() or not full_path.is_file():
+        # ✅ البحث في جميع المسارات المحتملة
+        for path in cleaned_paths:
+            if not path or path.startswith('/'):
+                continue
+                
+            test_path = media_root / path
+            searched_paths.append(str(test_path))
+            
+            try:
+                # ✅ التأكد من أن الملف موجود وداخل MEDIA_ROOT
+                resolved_test = test_path.resolve()
+                resolved_media = media_root.resolve()
+                
+                # ✅ التحقق من أن المسار داخل MEDIA_ROOT
+                try:
+                    resolved_test.relative_to(resolved_media)
+                except ValueError:
+                    # المسار خارج MEDIA_ROOT - تخطي
+                    continue
+                
+                # ✅ التحقق من وجود الملف
+                if resolved_test.exists() and resolved_test.is_file():
+                    full_path = resolved_test
+                    logger.info(f"✅ File found: {path} -> {full_path}")
+                    break
+            except Exception as e:
+                logger.debug(f"Path check failed for {path}: {e}")
+                continue
+        
+        # ✅ إذا لم يتم العثور على الملف
+        if not full_path:
+            logger.warning(f"❌ File not found. Original: {original_path}, Searched paths: {searched_paths}")
             return Response(
-                {"detail": "File not found"},
+                {
+                    "detail": "File not found",
+                    "original_path": original_path,
+                    "searched_paths": searched_paths[:5]  # أول 5 مسارات فقط
+                },
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        # ✅ التأكد من أن الملف داخل MEDIA_ROOT (منع directory traversal)
-        try:
-            full_path.resolve().relative_to(media_root.resolve())
-        except ValueError:
-            return Response(
-                {"detail": "Invalid file path"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
         # ✅ تحديد content type
-        import mimetypes
         content_type, encoding = mimetypes.guess_type(str(full_path))
         if not content_type:
             content_type = 'application/octet-stream'
         
         # ✅ إرجاع الملف مع headers مناسبة
-        response = FileResponse(
-            open(full_path, 'rb'),
-            content_type=content_type
-        )
-        
-        # ✅ إضافة Content-Disposition header
-        filename = os.path.basename(file_path)
-        response['Content-Disposition'] = f'inline; filename="{filename}"'
-        
-        # ✅ إضافة CORS headers إذا لزم الأمر
-        response['Access-Control-Allow-Credentials'] = 'true'
-        response['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
-        
-        return response
+        try:
+            file_handle = open(full_path, 'rb')
+            response = FileResponse(
+                file_handle,
+                content_type=content_type
+            )
+            
+            # ✅ إضافة Content-Disposition header
+            filename = os.path.basename(str(full_path))
+            # ✅ فك ترميز اسم الملف إذا كان يحتوي على أحرف عربية
+            try:
+                filename = urllib.parse.unquote(filename)
+            except:
+                pass
+            
+            response['Content-Disposition'] = f'inline; filename="{filename}"'
+            
+            # ✅ إضافة CORS headers إذا لزم الأمر
+            response['Access-Control-Allow-Credentials'] = 'true'
+            origin = request.headers.get('Origin', '*')
+            response['Access-Control-Allow-Origin'] = origin
+            
+            # ✅ إضافة Cache-Control للتحسين
+            response['Cache-Control'] = 'private, max-age=3600'
+            
+            logger.info(f"✅ File served successfully: {filename} from {full_path}")
+            return response
+            
+        except IOError as e:
+            logger.error(f"IOError opening file {full_path}: {e}")
+            return Response(
+                {"detail": "Error reading file"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
         
     except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"Error downloading file {file_path}: {e}", exc_info=True)
+        logger.error(f"❌ Error downloading file {original_path if 'original_path' in locals() else file_path}: {e}", exc_info=True)
         return Response(
-            {"detail": "Error downloading file"},
+            {"detail": "Error downloading file", "error": str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
