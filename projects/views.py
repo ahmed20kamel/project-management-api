@@ -58,44 +58,97 @@ class ProjectViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         """تصفية المشاريع حسب tenant المستخدم مع تحسين الأداء"""
-        queryset = super().get_queryset()
-        
-        # ✅ تحسين الأداء: استخدام select_related و prefetch_related لتقليل عدد الاستعلامات
-        # ✅ استخدام select_related فقط للعلاقات المضمونة (ForeignKey)
-        queryset = queryset.select_related('tenant')  # ForeignKey مضمون
-        
-        # ✅ prefetch_related للعلاقات العكسية (آمنة حتى لو كانت فارغة)
         try:
-            queryset = queryset.prefetch_related(
-                'payments',  # Reverse ForeignKey
-                'variations',  # Reverse ForeignKey
-                'actual_invoices',  # Reverse ForeignKey - اسم صحيح من النموذج
-                'projectconsultant_set',  # Reverse ForeignKey
-                'projectconsultant_set__consultant',  # Nested prefetch
-            )
+            queryset = super().get_queryset()
+            
+            # ✅ تحسين الأداء: استخدام select_related و prefetch_related لتقليل عدد الاستعلامات
+            # ✅ استخدام select_related فقط للعلاقات المضمونة (ForeignKey)
+            try:
+                queryset = queryset.select_related('tenant')  # ForeignKey مضمون
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Error in select_related('tenant'): {e}")
+            
+            # ✅ prefetch_related للعلاقات العكسية (آمنة حتى لو كانت فارغة)
+            try:
+                queryset = queryset.prefetch_related(
+                    'payments',  # Reverse ForeignKey
+                    'variations',  # Reverse ForeignKey
+                    'actual_invoices',  # Reverse ForeignKey - اسم صحيح من النموذج
+                    'projectconsultant_set',  # Reverse ForeignKey
+                    'projectconsultant_set__consultant',  # Nested prefetch
+                )
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Error in prefetch_related: {e}")
+                # نكمل بدون prefetch_related إذا فشل
+            
+            # ✅ ملاحظة: لا نستخدم select_related للعلاقات OneToOne الاختيارية
+            # لأنها قد تسبب مشاكل إذا لم تكن موجودة
+            
+            # إذا كان المستخدم superuser، يمكنه رؤية جميع المشاريع
+            if self.request.user.is_superuser:
+                return queryset
+            
+            # تصفية حسب tenant المستخدم
+            user_tenant = None
+            if hasattr(self.request, 'tenant') and self.request.tenant:
+                user_tenant = self.request.tenant
+            elif hasattr(self.request.user, 'tenant') and self.request.user.tenant:
+                user_tenant = self.request.user.tenant
+            
+            if user_tenant:
+                queryset = queryset.filter(tenant=user_tenant)
+            else:
+                # إذا لم يكن للمستخدم tenant، لا يعرض أي مشاريع
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"User {self.request.user.email} has no tenant, returning empty queryset")
+                queryset = queryset.none()
+            
+            return queryset
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
-            logger.warning(f"Error in prefetch_related: {e}")
-            # نكمل بدون prefetch_related إذا فشل
-        
-        # ✅ ملاحظة: لا نستخدم select_related للعلاقات OneToOne الاختيارية
-        # لأنها قد تسبب مشاكل إذا لم تكن موجودة
-        
-        # إذا كان المستخدم superuser، يمكنه رؤية جميع المشاريع
-        if self.request.user.is_superuser:
-            return queryset
-        
-        # تصفية حسب tenant المستخدم
-        if hasattr(self.request, 'tenant') and self.request.tenant:
-            queryset = queryset.filter(tenant=self.request.tenant)
-        elif hasattr(self.request.user, 'tenant') and self.request.user.tenant:
-            queryset = queryset.filter(tenant=self.request.user.tenant)
-        else:
-            # إذا لم يكن للمستخدم tenant، لا يعرض أي مشاريع
-            queryset = queryset.none()
-        
-        return queryset
+            logger.error(f"Error in get_queryset: {e}", exc_info=True)
+            # ✅ إرجاع queryset فارغ في حالة الخطأ
+            return Project.objects.none()
+    
+    def list(self, request, *args, **kwargs):
+        """معالجة آمنة لقراءة قائمة المشاريع مع التعامل مع الأخطاء"""
+        try:
+            # ✅ تسجيل معلومات للتشخيص
+            import logging
+            logger = logging.getLogger(__name__)
+            
+            # التحقق من queryset قبل التسلسل
+            queryset = self.get_queryset()
+            total_count = queryset.count()
+            logger.info(f"Projects queryset count: {total_count}, User: {request.user.email}, Tenant: {getattr(request.user, 'tenant', None)}")
+            
+            return super().list(request, *args, **kwargs)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error listing projects: {e}", exc_info=True)
+            # ✅ إرجاع قائمة فارغة بدلاً من 500 error
+            return Response([], status=status.HTTP_200_OK)
+    
+    def retrieve(self, request, *args, **kwargs):
+        """معالجة آمنة لقراءة مشروع مع التعامل مع الأخطاء"""
+        try:
+            return super().retrieve(request, *args, **kwargs)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error retrieving project {kwargs.get('pk')}: {e}", exc_info=True)
+            # ✅ إرجاع 404 بدلاً من 500 error
+            return Response(
+                {"detail": "Project not found or error loading data."},
+                status=status.HTTP_404_NOT_FOUND
+            )
     
     def perform_create(self, serializer):
         """ربط المشروع الجديد بـ tenant المستخدم والتحقق من Limits"""

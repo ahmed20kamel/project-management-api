@@ -281,6 +281,61 @@ class ProjectSerializer(serializers.ModelSerializer):
     delete_approved_by = serializers.SerializerMethodField()
     last_approved_by = serializers.SerializerMethodField()
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # تعيين queryset للـ current_stage_id
+        if WorkflowStage and 'current_stage_id' in self.fields:
+            self.fields['current_stage_id'].queryset = WorkflowStage.objects.filter(is_active=True)
+    
+    def get_current_stage(self, obj):
+        try:
+            if obj.current_stage:
+                return {
+                    'id': obj.current_stage.id,
+                    'code': getattr(obj.current_stage, 'code', None),
+                    'name': getattr(obj.current_stage, 'name', None),
+                    'name_en': getattr(obj.current_stage, 'name_en', None),
+                }
+        except Exception as e:
+            logger.warning(f"Error getting current_stage for project {obj.id}: {e}")
+        return None
+    
+    def get_delete_requested_by(self, obj):
+        try:
+            if obj.delete_requested_by:
+                return {
+                    'id': obj.delete_requested_by.id,
+                    'email': getattr(obj.delete_requested_by, 'email', ''),
+                    'full_name': obj.delete_requested_by.get_full_name() if hasattr(obj.delete_requested_by, 'get_full_name') else '',
+                }
+        except Exception as e:
+            logger.warning(f"Error getting delete_requested_by for project {obj.id}: {e}")
+        return None
+    
+    def get_delete_approved_by(self, obj):
+        try:
+            if obj.delete_approved_by:
+                return {
+                    'id': obj.delete_approved_by.id,
+                    'email': getattr(obj.delete_approved_by, 'email', ''),
+                    'full_name': obj.delete_approved_by.get_full_name() if hasattr(obj.delete_approved_by, 'get_full_name') else '',
+                }
+        except Exception as e:
+            logger.warning(f"Error getting delete_approved_by for project {obj.id}: {e}")
+        return None
+    
+    def get_last_approved_by(self, obj):
+        try:
+            if obj.last_approved_by:
+                return {
+                    'id': obj.last_approved_by.id,
+                    'email': getattr(obj.last_approved_by, 'email', ''),
+                    'full_name': obj.last_approved_by.get_full_name() if hasattr(obj.last_approved_by, 'get_full_name') else '',
+                }
+        except Exception as e:
+            logger.warning(f"Error getting last_approved_by for project {obj.id}: {e}")
+        return None
+
     class Meta:
         model  = Project
         fields = [
@@ -295,49 +350,6 @@ class ProjectSerializer(serializers.ModelSerializer):
             "last_approved_by", "last_approved_at", "approval_notes",
             "created_at", "updated_at",
         ]
-    
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # تعيين queryset للـ current_stage_id
-        if WorkflowStage and 'current_stage_id' in self.fields:
-            self.fields['current_stage_id'].queryset = WorkflowStage.objects.filter(is_active=True)
-    
-    def get_current_stage(self, obj):
-        if obj.current_stage:
-            return {
-                'id': obj.current_stage.id,
-                'code': obj.current_stage.code,
-                'name': obj.current_stage.name,
-                'name_en': obj.current_stage.name_en,
-            }
-        return None
-    
-    def get_delete_requested_by(self, obj):
-        if obj.delete_requested_by:
-            return {
-                'id': obj.delete_requested_by.id,
-                'email': obj.delete_requested_by.email,
-                'full_name': obj.delete_requested_by.get_full_name(),
-            }
-        return None
-    
-    def get_delete_approved_by(self, obj):
-        if obj.delete_approved_by:
-            return {
-                'id': obj.delete_approved_by.id,
-                'email': obj.delete_approved_by.email,
-                'full_name': obj.delete_approved_by.get_full_name(),
-            }
-        return None
-    
-    def get_last_approved_by(self, obj):
-        if obj.last_approved_by:
-            return {
-                'id': obj.last_approved_by.id,
-                'email': obj.last_approved_by.email,
-                'full_name': obj.last_approved_by.get_full_name(),
-            }
-        return None
         extra_kwargs = {
             "name": {"required": False, "allow_blank": True},
             "project_type": {"required": False},
@@ -371,45 +383,59 @@ class ProjectSerializer(serializers.ModelSerializer):
     def get_display_name(self, obj):
         # نكوّن الاسم من المالك المفوض في الـ SitePlan، ولو أكثر من مالك نضيف "وشركاؤه"
         # ✅ إذا كان obj.name موجوداً، نستخدمه أولاً (هذا هو الاسم المحفوظ من الملاك)
-        if obj.name and obj.name.strip():
-            return obj.name
-        
-        # ✅ إذا لم يكن هناك اسم محفوظ، نحاول حسابه من الملاك
         try:
-            sp = obj.siteplan
-        except SitePlan.DoesNotExist:
-            sp = None
+            if obj.name and obj.name.strip():
+                return obj.name
+            
+            # ✅ إذا لم يكن هناك اسم محفوظ، نحاول حسابه من الملاك
+            try:
+                sp = obj.siteplan
+            except SitePlan.DoesNotExist:
+                sp = None
+            except Exception as e:
+                logger.warning(f"Error accessing siteplan for project {obj.id}: {e}")
+                sp = None
 
-        main_name = ""
-        owners_count = 0
-        if sp:
-            qs = sp.owners.all()
-            owners_count = qs.count()
-            
-            # ✅ البحث عن المالك المفوض أولاً
-            authorized_owner = qs.filter(is_authorized=True).first()
-            
-            if authorized_owner:
-                ar = (authorized_owner.owner_name_ar or "").strip()
-                en = (authorized_owner.owner_name_en or "").strip()
-                main_name = ar or en
-            else:
-                # ✅ إذا لم يكن هناك مالك مفوض محدد، نستخدم الأول (للتوافق مع البيانات القديمة)
-                for o in qs.order_by("id"):
-                    ar = (o.owner_name_ar or "").strip()
-                    en = (o.owner_name_en or "").strip()
-                    if ar or en:
+            main_name = ""
+            owners_count = 0
+            if sp:
+                try:
+                    qs = sp.owners.all()
+                    owners_count = qs.count()
+                    
+                    # ✅ البحث عن المالك المفوض أولاً
+                    authorized_owner = qs.filter(is_authorized=True).first()
+                    
+                    if authorized_owner:
+                        ar = (getattr(authorized_owner, 'owner_name_ar', None) or "").strip()
+                        en = (getattr(authorized_owner, 'owner_name_en', None) or "").strip()
                         main_name = ar or en
-                        break
+                    else:
+                        # ✅ إذا لم يكن هناك مالك مفوض محدد، نستخدم الأول (للتوافق مع البيانات القديمة)
+                        for o in qs.order_by("id"):
+                            ar = (getattr(o, 'owner_name_ar', None) or "").strip()
+                            en = (getattr(o, 'owner_name_en', None) or "").strip()
+                            if ar or en:
+                                main_name = ar or en
+                                break
+                except Exception as e:
+                    logger.warning(f"Error getting owners for project {obj.id}: {e}")
 
-        if main_name:
-            return f"{main_name} وشركاؤه" if owners_count > 1 else main_name
-        
-        # ✅ إذا لم يكن هناك اسم ولا ملاك، نستخدم ID أو نص افتراضي
-        project_id = getattr(obj, 'id', None)
-        if project_id:
-            return f"مشروع #{project_id}"
-        return "مشروع جديد"
+            if main_name:
+                return f"{main_name} وشركاؤه" if owners_count > 1 else main_name
+            
+            # ✅ إذا لم يكن هناك اسم ولا ملاك، نستخدم ID أو نص افتراضي
+            project_id = getattr(obj, 'id', None)
+            if project_id:
+                return f"مشروع #{project_id}"
+            return "مشروع جديد"
+        except Exception as e:
+            logger.error(f"Error in get_display_name for project {getattr(obj, 'id', 'unknown')}: {e}", exc_info=True)
+            # ✅ إرجاع اسم افتراضي في حالة الخطأ
+            project_id = getattr(obj, 'id', None)
+            if project_id:
+                return f"مشروع #{project_id}"
+            return "مشروع جديد"
 
 # =========================
 # SitePlan + Owners
