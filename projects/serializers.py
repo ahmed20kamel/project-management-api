@@ -44,9 +44,8 @@ def get_file_url(file_field, request=None):
         if hasattr(file_field, 'url'):
             try:
                 url = file_field.url
-            except (ValueError, AttributeError) as e:
+            except (ValueError, AttributeError):
                 # إذا فشل url، نحاول استخدام name
-                logger.debug(f"file_field.url failed, trying name: {e}")
                 if hasattr(file_field, 'name') and file_field.name:
                     try:
                         url = default_storage.url(file_field.name)
@@ -57,8 +56,8 @@ def get_file_url(file_field, request=None):
         if not url and hasattr(file_field, 'name') and file_field.name:
             try:
                 url = default_storage.url(file_field.name)
-            except Exception as e:
-                logger.debug(f"default_storage.url failed: {e}")
+            except Exception:
+                pass
         
         # ✅ إذا لم نحصل على URL، نحاول str
         if not url:
@@ -739,7 +738,6 @@ class SitePlanSerializer(serializers.ModelSerializer):
                         # ✅ تخطي الملفات - سنتعامل معها من req.FILES
                         v = data.get(k)
                         if hasattr(v, 'read'):  # File object
-                            logger.debug(f"Extract owners: Skipping file object: {k}")
                             continue
                         
                         # ✅ التحقق من الـ pattern
@@ -772,7 +770,6 @@ class SitePlanSerializer(serializers.ModelSerializer):
                     logger.info(f"Extract owners: Processing files from req.FILES, count: {len(files) if hasattr(files, '__len__') else 'unknown'}")
                     for k, v in files.items():
                         k_str = str(k)
-                        logger.debug(f"Extract owners: Checking file key: {k_str}")
                         m = self._owners_key_re.match(k_str)
                         if not m:
                             continue
@@ -781,8 +778,6 @@ class SitePlanSerializer(serializers.ModelSerializer):
                         if key == "id_attachment":  # فقط ملفات الهوية
                             logger.info(f"Extract owners: Found id_attachment file for owner {idx}: {k_str}")
                             buckets.setdefault(idx, {})[key] = v
-                        else:
-                            logger.debug(f"Extract owners: Skipping file key (not id_attachment): {k_str}")
                 except (AttributeError, TypeError) as e:
                     logger.error(f"Extract owners: Error processing files: {e}", exc_info=True)
             
@@ -803,11 +798,8 @@ class SitePlanSerializer(serializers.ModelSerializer):
             if not isinstance(o, dict):
                 logger.warning(f"Extract owners: Skipping non-dict at index {idx}: {type(o)}")
                 continue
-            logger.debug(f"Extract owners: Processing owner {idx}: {o}")
             c = self._normalize_owner(o)
-            logger.debug(f"Extract owners: Normalized owner {idx}: {c}")
             has_name = self._has_name(c)
-            logger.debug(f"Extract owners: Owner {idx} has_name: {has_name}")
             if has_name:
                 cleaned.append(c)
                 logger.info(f"Extract owners: Added owner {idx} to cleaned list")
@@ -1654,7 +1646,6 @@ class ContractSerializer(serializers.ModelSerializer):
                             else:
                                 logger.warning(f"⚠️ Attachment index {idx} out of range (len={len(attachments_parsed)})")
                         else:
-                            logger.debug(f"🔍 Key '{key}' doesn't match attachments pattern")
             except Exception as e:
                 logger.warning(f"Error extracting attachment files: {e}", exc_info=True)
         

@@ -7,6 +7,8 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from django.contrib.auth import authenticate
 from django.utils import timezone
 from django.db.models import Q
+from django.core.cache import cache
+from django_ratelimit.decorators import ratelimit
 from rest_framework import serializers as drf_serializers
 
 from .models import User, Role, Permission, WorkflowStage, WorkflowRule, AuditLog, Tenant, TenantSettings, PendingChange
@@ -29,6 +31,7 @@ from .utils import (
 # ====== Company Registration View ======
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
+@ratelimit(key='ip', rate='5/h', method='POST')  # ✅ Rate limiting: 5 requests per hour per IP
 def register_company(request):
     """
     تسجيل شركة جديدة مع المستخدم المسؤول
@@ -299,25 +302,41 @@ class TenantSettingsViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['get', 'patch', 'put'], permission_classes=[permissions.IsAuthenticated])
     def current(self, request):
-        """الحصول على أو تحديث إعدادات الشركة الحالية"""
+        """الحصول على أو تحديث إعدادات الشركة الحالية مع caching"""
         if not hasattr(request.user, 'tenant') or not request.user.tenant:
             return Response(
                 {'error': 'User is not associated with any tenant'},
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        try:
-            settings = TenantSettings.objects.get(tenant=request.user.tenant)
-        except TenantSettings.DoesNotExist:
-            return Response(
-                {'error': 'Tenant settings not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
+        tenant_id = request.user.tenant.id
+        cache_key = f'tenant_settings_{tenant_id}'
         
         if request.method == 'GET':
+            # ✅ محاولة الحصول من cache
+            cached_data = cache.get(cache_key)
+            if cached_data is not None:
+                return Response(cached_data)
+            
+            try:
+                settings = TenantSettings.objects.select_related('tenant').get(tenant=request.user.tenant)
+            except TenantSettings.DoesNotExist:
+                return Response(
+                    {'error': 'Tenant settings not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
             serializer = self.get_serializer(settings, context={'request': request})
-            return Response(serializer.data)
+            response_data = serializer.data
+            
+            # ✅ حفظ في cache لمدة 5 دقائق
+            cache.set(cache_key, response_data, 60 * 5)
+            return Response(response_data)
         elif request.method in ['PATCH', 'PUT']:
+            # ✅ مسح cache عند التحديث
+            cache.delete(cache_key)
+            cache.delete(f'tenant_theme_{tenant_id}')  # مسح theme cache أيضاً
+            
             # التحقق من الصلاحيات: فقط Company Super Admin يمكنه التعديل
             if not request.user.is_superuser:
                 if not is_company_admin(request.user):
@@ -332,6 +351,14 @@ class TenantSettingsViewSet(viewsets.ModelViewSet):
             for field in protected_fields:
                 if field in request.data:
                     del request.data[field]
+            
+            try:
+                settings = TenantSettings.objects.select_related('tenant').get(tenant=request.user.tenant)
+            except TenantSettings.DoesNotExist:
+                return Response(
+                    {'error': 'Tenant settings not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
             
             # تحديث الإعدادات
             serializer = self.get_serializer(
@@ -348,9 +375,6 @@ class TenantSettingsViewSet(viewsets.ModelViewSet):
                 import logging
                 logger = logging.getLogger(__name__)
                 logger.info(f"TenantSettings updated for tenant {settings.tenant.id}")
-                logger.info(f"Company Logo: {instance.company_logo}")
-                logger.info(f"Primary Color: {instance.primary_color}")
-                logger.info(f"Secondary Color: {instance.secondary_color}")
                 
                 # ✅ إعادة تحميل من قاعدة البيانات للتأكد
                 instance.refresh_from_db()
@@ -371,14 +395,13 @@ class TenantSettingsViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
     def theme(self, request):
-        """الحصول على Theme الشركة (للقراءة فقط) - متاح لجميع المستخدمين داخل الشركة"""
+        """الحصول على Theme الشركة مع caching - متاح لجميع المستخدمين داخل الشركة"""
         import logging
         logger = logging.getLogger(__name__)
         
         try:
             # Super Admin لا يحتاج Theme - نرجع theme افتراضي
             if request.user.is_superuser:
-                logger.info("Super admin requested theme, returning default")
                 return Response({
                     'tenant_id': None,
                     'company_name': 'System Admin',
@@ -390,7 +413,6 @@ class TenantSettingsViewSet(viewsets.ModelViewSet):
             
             # التحقق من وجود tenant
             if not hasattr(request.user, 'tenant') or not request.user.tenant:
-                logger.warning(f"User {request.user.id} has no tenant, returning default theme")
                 return Response({
                     'tenant_id': None,
                     'company_name': '',
@@ -400,14 +422,19 @@ class TenantSettingsViewSet(viewsets.ModelViewSet):
                     'secondary_color': '#ea580c'
                 })
             
+            tenant_id = request.user.tenant.id
+            cache_key = f'tenant_theme_{tenant_id}'
+            
+            # ✅ محاولة الحصول من cache
+            cached_theme = cache.get(cache_key)
+            if cached_theme is not None:
+                return Response(cached_theme)
+            
             # محاولة الحصول على TenantSettings
             # Theme الشركة متاح لجميع المستخدمين داخل الشركة (Manager, Staff User, Company Super Admin)
             try:
                 # ✅ إعادة تحميل من قاعدة البيانات للتأكد من أحدث البيانات
                 settings = TenantSettings.objects.select_related('tenant').get(tenant=request.user.tenant)
-                
-                # ✅ Logging للتأكد من البيانات
-                logger.info(f"Loading theme for tenant {request.user.tenant.id}")
                 
                 serializer = TenantThemeSerializer(settings, context={'request': request})
                 theme_data = serializer.data
@@ -419,6 +446,9 @@ class TenantSettingsViewSet(viewsets.ModelViewSet):
                 # ✅ التأكد من وجود company_name
                 if not theme_data.get('company_name') and request.user.tenant:
                     theme_data['company_name'] = request.user.tenant.name or ''
+                
+                # ✅ حفظ في cache لمدة 5 دقائق
+                cache.set(cache_key, theme_data, 60 * 5)
                 
                 return Response(theme_data)
             except TenantSettings.DoesNotExist:
@@ -470,6 +500,10 @@ class TenantSettingsViewSet(viewsets.ModelViewSet):
 
 # ====== Custom JWT Token View ======
 class CustomTokenObtainPairView(TokenObtainPairView):
+    """
+    Custom JWT Token Obtain View with rate limiting
+    """
+    @ratelimit(key='ip', rate='10/m', method='POST')  # ✅ 10 requests per minute per IP
     def post(self, request, *args, **kwargs):
         serializer = LoginSerializer(data=request.data)
         if serializer.is_valid():
@@ -836,24 +870,40 @@ class UserViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['post'], permission_classes=[permissions.IsAuthenticated])
     def logout(self, request):
-        """تسجيل الخروج"""
+        """تسجيل الخروج - يرجع 204 حتى لو لم يكن هناك session"""
         try:
             refresh_token = request.data.get('refresh_token')
             if refresh_token:
-                token = RefreshToken(refresh_token)
-                token.blacklist()
+                try:
+                    token = RefreshToken(refresh_token)
+                    token.blacklist()
+                except Exception:
+                    # ✅ إذا فشل blacklist (مثل token منتهي أو غير موجود)، نكمل
+                    pass
             
-            log_audit(
-                user=request.user,
-                action='logout',
-                model_name='User',
-                object_id=request.user.id,
-                description='User logged out',
-                ip_address=get_client_ip(request)
-            )
-            return Response({'message': 'Successfully logged out'})
+            # ✅ تسجيل logout فقط إذا كان المستخدم موجود
+            if request.user and request.user.is_authenticated:
+                try:
+                    log_audit(
+                        user=request.user,
+                        action='logout',
+                        model_name='User',
+                        object_id=request.user.id,
+                        description='User logged out',
+                        ip_address=get_client_ip(request)
+                    )
+                except Exception:
+                    # ✅ إذا فشل audit log، نكمل
+                    pass
+            
+            # ✅ إرجاع 204 No Content (نجاح بدون محتوى)
+            return Response(status=status.HTTP_204_NO_CONTENT)
         except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            # ✅ حتى في حالة الخطأ، نرجع 204 لأن logout يجب أن ينجح دائماً
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Logout error (returning 204 anyway): {e}")
+            return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # ====== Role ViewSet ======

@@ -4,6 +4,7 @@ from django.urls import path, include
 from django.http import JsonResponse
 from django.views.generic import RedirectView
 from projects.views import csrf_ping  # يستورد csrf endpoint
+from .health_checks import health_check, detailed_health_check
 import os
 
 # =======================
@@ -29,6 +30,8 @@ else:
 # باقي المسارات
 urlpatterns += [
     path("healthz/", healthz),
+    path("health/", health_check, name="health_check"),  # ✅ Basic health check
+    path("health/detailed/", detailed_health_check, name="detailed_health_check"),  # ✅ Detailed health check
     path("admin/", admin.site.urls),
     path("api/csrf/", csrf_ping),       # يزرع كوكي CSRF
     path("api/public/", include("authentication.public_urls")),  # Public APIs

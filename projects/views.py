@@ -4,8 +4,10 @@ from django.http import JsonResponse, FileResponse, Http404
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.db import models
 from django.conf import settings
+from django.core.cache import cache
 import os
 from pathlib import Path
+import hashlib
 
 from rest_framework import viewsets, status
 from rest_framework.decorators import action, api_view, permission_classes
@@ -1141,7 +1143,7 @@ def download_file(request, file_path):
                     logger.info(f"✅ File found: {path} -> {full_path}")
                     break
             except Exception as e:
-                logger.debug(f"Path check failed for {path}: {e}")
+                # Path check failed - continue to next path
                 continue
         
         # ✅ إذا لم يتم العثور على الملف
@@ -1260,7 +1262,39 @@ class ConsultantViewSet(viewsets.ModelViewSet):
                 'tenant': 'User must be associated with a tenant'
             })
         
-        serializer.save(tenant=tenant)
+        instance = serializer.save(tenant=tenant)
+        
+        # ✅ مسح cache عند إضافة استشاري جديد
+        if tenant:
+            cache.delete(f'consultants_list_{tenant.id}')
+        
+        return instance
+    
+    def perform_update(self, serializer):
+        """تحديث الاستشاري مع مسح cache"""
+        tenant_id = None
+        if hasattr(self.request, 'tenant') and self.request.tenant:
+            tenant_id = self.request.tenant.id
+        elif hasattr(self.request.user, 'tenant') and self.request.user.tenant:
+            tenant_id = self.request.user.tenant.id
+        
+        instance = serializer.save()
+        
+        # ✅ مسح cache عند التحديث
+        if tenant_id:
+            cache.delete(f'consultants_list_{tenant_id}')
+        
+        return instance
+    
+    def perform_destroy(self, instance):
+        """حذف الاستشاري مع مسح cache"""
+        tenant_id = instance.tenant.id if instance.tenant else None
+        
+        instance.delete()
+        
+        # ✅ مسح cache عند الحذف
+        if tenant_id:
+            cache.delete(f'consultants_list_{tenant_id}')
     
     @action(detail=True, methods=['get'])
     def projects(self, request, pk=None):

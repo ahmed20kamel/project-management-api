@@ -1,8 +1,10 @@
 from pathlib import Path
 import os
-from dotenv import load_dotenv
 
-load_dotenv()  # local فقط
+# ✅ تحميل .env فقط في التطوير
+if os.getenv("ENVIRONMENT") != "production":
+    from dotenv import load_dotenv
+    load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -36,6 +38,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "rest_framework_simplejwt",
     "corsheaders",
+    "django_ratelimit",  # ✅ Rate limiting
 
     "projects.apps.ProjectsConfig",  # ✅ استخدام AppConfig للتأكد من تحميل signals
     "authentication.apps.AuthenticationConfig",  # Authentication app
@@ -54,7 +57,8 @@ MIDDLEWARE = [
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
 
-    "django.middleware.csrf.CsrfViewMiddleware",
+    # ✅ استخدام custom CSRF middleware لدعم Partitioned attribute
+    "backend.csrf_middleware.CustomCsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "authentication.middleware.TenantMiddleware",  # Multi-Tenant Middleware
     "django.contrib.messages.middleware.MessageMiddleware",
@@ -96,8 +100,47 @@ DATABASES = {
         "PASSWORD": os.getenv("DB_PASSWORD"),
         "HOST": os.getenv("DB_HOST"),
         "PORT": os.getenv("DB_PORT"),
+        "OPTIONS": {
+            "connect_timeout": 10,
+        },
+        "CONN_MAX_AGE": 600,  # Connection pooling: 10 minutes
     }
 }
+
+# =========================
+# Cache Configuration
+# =========================
+REDIS_URL = os.getenv("REDIS_URL", None)
+
+if REDIS_URL:
+    # ✅ استخدام Redis إذا كان متاحاً
+    CACHES = {
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": REDIS_URL,
+            "OPTIONS": {
+                "CLIENT_CLASS": "django_redis.client.DefaultClient",
+                "PARSER_CLASS": "redis.connection.HiredisParser",
+                "CONNECTION_POOL_KWARGS": {
+                    "max_connections": 50,
+                    "retry_on_timeout": True,
+                },
+                "COMPRESSOR": "django_redis.compressors.zlib.ZlibCompressor",
+                "IGNORE_EXCEPTIONS": True,  # لا نرفع استثناء إذا فشل cache
+            },
+            "KEY_PREFIX": "project_mgmt",
+            "TIMEOUT": 300,  # 5 minutes default
+        }
+    }
+else:
+    # ✅ استخدام memory cache كبديل إذا لم يكن Redis متاحاً
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "unique-snowflake",
+            "TIMEOUT": 300,
+        }
+    }
 
 
 # =========================
@@ -127,7 +170,13 @@ CORS_ALLOW_HEADERS = [
     "origin",
     "user-agent",
     "x-csrftoken",
+    "x-csrf-token",  # ✅ دعم كلا الاسمين
     "x-requested-with",
+]
+# ✅ إضافة CORS expose headers للسماح للـ frontend بقراءة headers
+CORS_EXPOSE_HEADERS = [
+    "content-type",
+    "x-csrftoken",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -142,11 +191,29 @@ if DEBUG:
     SESSION_COOKIE_SECURE = False
     CSRF_COOKIE_SAMESITE = "Lax"
     SESSION_COOKIE_SAMESITE = "Lax"
+    CSRF_COOKIE_HTTPONLY = False  # ✅ للسماح للـ JavaScript بالوصول في التطوير
 else:
     CSRF_COOKIE_SECURE = True
     SESSION_COOKIE_SECURE = True
-    CSRF_COOKIE_SAMESITE = "None"
-    SESSION_COOKIE_SAMESITE = "None"
+    CSRF_COOKIE_SAMESITE = "None"  # ✅ مطلوب للـ cross-domain
+    SESSION_COOKIE_SAMESITE = "None"  # ✅ مطلوب للـ cross-domain
+    CSRF_COOKIE_HTTPONLY = False  # ✅ للسماح للـ JavaScript بالوصول
+    # ✅ لا نضيف CSRF_COOKIE_DOMAIN لأننا نريد أن يعمل على جميع subdomains
+    # ✅ إضافة Partitioned attribute للـ CSRF cookie (لحل تحذير Chrome)
+    # Note: Django لا يدعم Partitioned مباشرة، لكن يمكن إضافته عبر middleware
+
+# =========================
+# Security Headers (Production Only)
+# =========================
+if not DEBUG:
+    SECURE_SSL_REDIRECT = True
+    SECURE_HSTS_SECONDS = 31536000  # 1 year
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    SECURE_BROWSER_XSS_FILTER = True
+    X_FRAME_OPTIONS = 'DENY'
 
 # =========================
 # Static / Media
@@ -174,6 +241,10 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
+    "EXCEPTION_HANDLER": "backend.exceptions.custom_exception_handler",
+    # ✅ تعطيل CSRF protection للـ DRF views (نستخدم JWT)
+    # Note: DRF views لا تحتاج CSRF protection لأنها تستخدم JWT authentication
+    # لكن Django CSRF middleware قد يسبب مشاكل، لذلك نتعامل معها في exception handler
 }
 
 # =========================
@@ -226,9 +297,19 @@ LOGGING = {
     },
     "root": {
         "handlers": ["console"],
-        "level": "INFO",
+        "level": "INFO" if not DEBUG else "DEBUG",
     },
     "loggers": {
+        "django": {
+            "handlers": ["console"],
+            "level": "INFO" if not DEBUG else "DEBUG",
+            "propagate": False,
+        },
+        "django.request": {
+            "handlers": ["console"],
+            "level": "ERROR" if not DEBUG else "WARNING",
+            "propagate": False,
+        },
         "projects": {
             "handlers": ["console"],
             "level": "INFO",
@@ -240,6 +321,11 @@ LOGGING = {
             "propagate": False,
         },
         "projects.serializers": {
+            "handlers": ["console"],
+            "level": "WARNING" if not DEBUG else "INFO",
+            "propagate": False,
+        },
+        "authentication": {
             "handlers": ["console"],
             "level": "INFO",
             "propagate": False,
