@@ -126,13 +126,23 @@ class ProjectViewSet(viewsets.ModelViewSet):
             # التحقق من queryset قبل التسلسل
             queryset = self.get_queryset()
             total_count = queryset.count()
-            logger.info(f"Projects queryset count: {total_count}, User: {request.user.email}, Tenant: {getattr(request.user, 'tenant', None)}")
+            user_tenant = getattr(request.user, 'tenant', None)
+            tenant_name = user_tenant.name if user_tenant else 'None'
+            logger.info(f"📊 Projects queryset count: {total_count}, User: {request.user.email}, Tenant: {tenant_name} (ID: {user_tenant.id if user_tenant else 'None'})")
             
-            return super().list(request, *args, **kwargs)
+            # ✅ محاولة التسلسل
+            response = super().list(request, *args, **kwargs)
+            
+            # ✅ تسجيل عدد المشاريع المُرجعة
+            if hasattr(response, 'data'):
+                projects_count = len(response.data) if isinstance(response.data, list) else (len(response.data.get('results', [])) if isinstance(response.data, dict) else 0)
+                logger.info(f"✅ Returning {projects_count} projects to frontend")
+            
+            return response
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
-            logger.error(f"Error listing projects: {e}", exc_info=True)
+            logger.error(f"❌ Error listing projects: {e}", exc_info=True)
             # ✅ إرجاع قائمة فارغة بدلاً من 500 error
             return Response([], status=status.HTTP_200_OK)
     
