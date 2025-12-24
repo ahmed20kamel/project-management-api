@@ -281,11 +281,89 @@ class ProjectSerializer(serializers.ModelSerializer):
     delete_approved_by = serializers.SerializerMethodField()
     last_approved_by = serializers.SerializerMethodField()
 
+    # ✅ Fields للبيانات المطلوبة عند استخدام include parameter
+    siteplan_data = serializers.SerializerMethodField()
+    license_data = serializers.SerializerMethodField()
+    contract_data = serializers.SerializerMethodField()
+    awarding_data = serializers.SerializerMethodField()
+    
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # تعيين queryset للـ current_stage_id
         if WorkflowStage and 'current_stage_id' in self.fields:
             self.fields['current_stage_id'].queryset = WorkflowStage.objects.filter(is_active=True)
+        
+        # ✅ إظهار fields المطلوبة فقط عند استخدام include parameter
+        request = self.context.get('request')
+        if request:
+            include_param = request.query_params.get('include', '')
+            include_list = [item.strip() for item in include_param.split(',')] if include_param else []
+            
+            # إخفاء fields إذا لم تكن مطلوبة
+            if 'siteplan' not in include_list:
+                self.fields.pop('siteplan_data', None)
+            if 'license' not in include_list:
+                self.fields.pop('license_data', None)
+            if 'contract' not in include_list:
+                self.fields.pop('contract_data', None)
+            if 'awarding' not in include_list:
+                self.fields.pop('awarding_data', None)
+    
+    def get_siteplan_data(self, obj):
+        """إرجاع بيانات SitePlan إذا كانت موجودة"""
+        try:
+            if hasattr(obj, 'siteplan') and obj.siteplan:
+                # ✅ استخدام الاسم مباشرة من نفس الملف (lazy import)
+                import sys
+                current_module = sys.modules[__name__]
+                SitePlanSerializer = getattr(current_module, 'SitePlanSerializer', None)
+                if SitePlanSerializer:
+                    return SitePlanSerializer(obj.siteplan, context=self.context).data
+        except Exception as e:
+            logger.warning(f"Error getting siteplan_data for project {obj.id}: {e}")
+        return None
+    
+    def get_license_data(self, obj):
+        """إرجاع بيانات BuildingLicense إذا كانت موجودة"""
+        try:
+            if hasattr(obj, 'license') and obj.license:
+                # ✅ استخدام الاسم مباشرة من نفس الملف (lazy import)
+                import sys
+                current_module = sys.modules[__name__]
+                BuildingLicenseSerializer = getattr(current_module, 'BuildingLicenseSerializer', None)
+                if BuildingLicenseSerializer:
+                    return BuildingLicenseSerializer(obj.license, context=self.context).data
+        except Exception as e:
+            logger.warning(f"Error getting license_data for project {obj.id}: {e}")
+        return None
+    
+    def get_contract_data(self, obj):
+        """إرجاع بيانات Contract إذا كانت موجودة"""
+        try:
+            if hasattr(obj, 'contract') and obj.contract:
+                # ✅ استخدام الاسم مباشرة من نفس الملف (lazy import)
+                import sys
+                current_module = sys.modules[__name__]
+                ContractSerializer = getattr(current_module, 'ContractSerializer', None)
+                if ContractSerializer:
+                    return ContractSerializer(obj.contract, context=self.context).data
+        except Exception as e:
+            logger.warning(f"Error getting contract_data for project {obj.id}: {e}")
+        return None
+    
+    def get_awarding_data(self, obj):
+        """إرجاع بيانات Awarding إذا كانت موجودة"""
+        try:
+            if hasattr(obj, 'awarding') and obj.awarding:
+                # ✅ استخدام الاسم مباشرة من نفس الملف (lazy import)
+                import sys
+                current_module = sys.modules[__name__]
+                AwardingSerializer = getattr(current_module, 'AwardingSerializer', None)
+                if AwardingSerializer:
+                    return AwardingSerializer(obj.awarding, context=self.context).data
+        except Exception as e:
+            logger.warning(f"Error getting awarding_data for project {obj.id}: {e}")
+        return None
     
     def get_current_stage(self, obj):
         try:
@@ -349,6 +427,8 @@ class ProjectSerializer(serializers.ModelSerializer):
             "delete_approved_by", "delete_approved_at",
             "last_approved_by", "last_approved_at", "approval_notes",
             "created_at", "updated_at",
+            # ✅ Fields للبيانات المطلوبة عند استخدام include parameter
+            "siteplan_data", "license_data", "contract_data", "awarding_data",
         ]
         extra_kwargs = {
             "name": {"required": False, "allow_blank": True},

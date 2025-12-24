@@ -70,6 +70,30 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 logger = logging.getLogger(__name__)
                 logger.warning(f"Error in select_related('tenant'): {e}")
             
+            # ✅ دعم include parameter لتحميل العلاقات المطلوبة
+            include_param = self.request.query_params.get('include', '')
+            if include_param:
+                include_list = [item.strip() for item in include_param.split(',')]
+                
+                # ✅ select_related للعلاقات OneToOne (siteplan, license, contract, awarding)
+                select_related_fields = []
+                if 'siteplan' in include_list:
+                    select_related_fields.append('siteplan')
+                if 'license' in include_list:
+                    select_related_fields.append('license')
+                if 'contract' in include_list:
+                    select_related_fields.append('contract')
+                if 'awarding' in include_list:
+                    select_related_fields.append('awarding')
+                
+                if select_related_fields:
+                    try:
+                        queryset = queryset.select_related(*select_related_fields)
+                    except Exception as e:
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.warning(f"Error in select_related for include: {e}")
+            
             # ✅ prefetch_related للعلاقات العكسية (آمنة حتى لو كانت فارغة)
             try:
                 queryset = queryset.prefetch_related(
@@ -84,9 +108,6 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 logger = logging.getLogger(__name__)
                 logger.warning(f"Error in prefetch_related: {e}")
                 # نكمل بدون prefetch_related إذا فشل
-            
-            # ✅ ملاحظة: لا نستخدم select_related للعلاقات OneToOne الاختيارية
-            # لأنها قد تسبب مشاكل إذا لم تكن موجودة
             
             # إذا كان المستخدم superuser، يمكنه رؤية جميع المشاريع
             if self.request.user.is_superuser:
