@@ -59,21 +59,26 @@ class ProjectViewSet(viewsets.ModelViewSet):
         queryset = super().get_queryset()
         
         # ✅ تحسين الأداء: استخدام select_related و prefetch_related لتقليل عدد الاستعلامات
-        queryset = queryset.select_related(
-            'tenant',  # ForeignKey
-            'siteplan',  # OneToOne
-            'buildinglicense',  # OneToOne
-            'contract',  # OneToOne
-            'awarding',  # OneToOne
-            'current_stage',  # ForeignKey (WorkflowStage)
-        ).prefetch_related(
-            'payments',  # Reverse ForeignKey
-            'variations',  # Reverse ForeignKey
-            'actualinvoices',  # Reverse ForeignKey
-            'projectconsultant_set',  # Reverse ForeignKey
-            'projectconsultant_set__consultant',  # Nested prefetch
-            'siteplan__owners',  # Nested prefetch for SitePlan owners
-        )
+        # ✅ استخدام select_related فقط للعلاقات المضمونة (ForeignKey)
+        queryset = queryset.select_related('tenant')  # ForeignKey مضمون
+        
+        # ✅ prefetch_related للعلاقات العكسية (آمنة حتى لو كانت فارغة)
+        try:
+            queryset = queryset.prefetch_related(
+                'payments',  # Reverse ForeignKey
+                'variations',  # Reverse ForeignKey
+                'actualinvoices',  # Reverse ForeignKey
+                'projectconsultant_set',  # Reverse ForeignKey
+                'projectconsultant_set__consultant',  # Nested prefetch
+            )
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Error in prefetch_related: {e}")
+            # نكمل بدون prefetch_related إذا فشل
+        
+        # ✅ ملاحظة: لا نستخدم select_related للعلاقات OneToOne الاختيارية
+        # لأنها قد تسبب مشاكل إذا لم تكن موجودة
         
         # إذا كان المستخدم superuser، يمكنه رؤية جميع المشاريع
         if self.request.user.is_superuser:
@@ -481,10 +486,21 @@ class _ProjectChildViewSet(viewsets.ModelViewSet):
         queryset = self.queryset
         
         # ✅ تحسين الأداء: استخدام select_related لتقليل عدد الاستعلامات
-        if hasattr(queryset.model, 'project'):
-            queryset = queryset.select_related('project', 'project__tenant')
-        if hasattr(queryset.model, 'tenant'):
-            queryset = queryset.select_related('tenant')
+        try:
+            if hasattr(queryset.model, 'project'):
+                queryset = queryset.select_related('project')
+                # محاولة إضافة project__tenant إذا كان موجوداً
+                try:
+                    queryset = queryset.select_related('project__tenant')
+                except Exception:
+                    pass  # إذا فشل، نكمل بدونها
+            if hasattr(queryset.model, 'tenant'):
+                queryset = queryset.select_related('tenant')
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Error in select_related: {e}")
+            # نكمل بدون select_related إذا فشل
         
         # تصفية حسب tenant
         if not self.request.user.is_superuser:

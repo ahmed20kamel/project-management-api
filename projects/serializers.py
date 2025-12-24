@@ -38,15 +38,36 @@ def get_file_url(file_field, request=None):
     
     try:
         # ✅ الحصول على URL من Django storage
-        if hasattr(file_field, 'url'):
-            url = file_field.url
-        elif hasattr(file_field, 'name'):
-            # إذا كان FileField لكن بدون url، نستخدم name
-            url = default_storage.url(file_field.name)
-        else:
-            url = str(file_field)
+        url = None
         
+        # ✅ محاولة الحصول على URL بأمان
+        if hasattr(file_field, 'url'):
+            try:
+                url = file_field.url
+            except (ValueError, AttributeError) as e:
+                # إذا فشل url، نحاول استخدام name
+                logger.debug(f"file_field.url failed, trying name: {e}")
+                if hasattr(file_field, 'name') and file_field.name:
+                    try:
+                        url = default_storage.url(file_field.name)
+                    except Exception:
+                        pass
+        
+        # ✅ إذا لم نحصل على URL من url، نحاول name
+        if not url and hasattr(file_field, 'name') and file_field.name:
+            try:
+                url = default_storage.url(file_field.name)
+            except Exception as e:
+                logger.debug(f"default_storage.url failed: {e}")
+        
+        # ✅ إذا لم نحصل على URL، نحاول str
         if not url:
+            try:
+                url = str(file_field)
+            except Exception:
+                return None
+        
+        if not url or not isinstance(url, str):
             return None
         
         # ✅ إزالة /media/ من البداية إذا كان موجوداً (لتوحيد المسارات)
@@ -60,11 +81,7 @@ def get_file_url(file_field, request=None):
         if media_url and url.startswith(media_url.lstrip('/')):
             url = url[len(media_url.lstrip('/')):]
         
-        # ✅ إذا كان request موجوداً، يمكن بناء absolute URL
-        # لكن في حالتنا نفضل المسار النسبي لاستخدامه مع /api/files/
-        # إذا أراد المستخدم absolute URL، يمكنه استخدام request.build_absolute_uri()
-        
-        return url
+        return url if url else None
         
     except Exception as e:
         logger.warning(f"Error getting file URL: {e}", exc_info=True)
@@ -2153,11 +2170,15 @@ class VariationSerializer(serializers.ModelSerializer):
     
     def get_variation_invoice_file(self, obj):
         """الحصول على رابط ملف فاتورة التعديل"""
-        url = get_file_url(getattr(obj, 'variation_invoice_file', None))
-        if url and self.context.get('request'):
-            request = self.context.get('request')
-            return request.build_absolute_uri(f"/api/files/{url}")
-        return url
+        try:
+            url = get_file_url(getattr(obj, 'variation_invoice_file', None))
+            if url and self.context.get('request'):
+                request = self.context.get('request')
+                return request.build_absolute_uri(f"/api/files/{url}")
+            return url
+        except Exception as e:
+            logger.warning(f"Error getting variation_invoice_file for Variation {obj.id}: {e}")
+            return None
     
     def create(self, validated_data):
         """Auto-generate variation_number if not provided and calculate consultant_fees from percentage"""
@@ -2355,31 +2376,47 @@ class PaymentSerializer(serializers.ModelSerializer):
     
     def get_deposit_slip(self, obj):
         """الحصول على رابط Deposit Slip"""
-        url = get_file_url(getattr(obj, 'deposit_slip', None))
-        if url and self.context.get('request'):
-            return self.context.get('request').build_absolute_uri(f"/api/files/{url}")
-        return url
+        try:
+            url = get_file_url(getattr(obj, 'deposit_slip', None))
+            if url and self.context.get('request'):
+                return self.context.get('request').build_absolute_uri(f"/api/files/{url}")
+            return url
+        except Exception as e:
+            logger.warning(f"Error getting deposit_slip for Payment {obj.id}: {e}")
+            return None
     
     def get_invoice_file(self, obj):
         """الحصول على رابط Invoice File"""
-        url = get_file_url(getattr(obj, 'invoice_file', None))
-        if url and self.context.get('request'):
-            return self.context.get('request').build_absolute_uri(f"/api/files/{url}")
-        return url
+        try:
+            url = get_file_url(getattr(obj, 'invoice_file', None))
+            if url and self.context.get('request'):
+                return self.context.get('request').build_absolute_uri(f"/api/files/{url}")
+            return url
+        except Exception as e:
+            logger.warning(f"Error getting invoice_file for Payment {obj.id}: {e}")
+            return None
     
     def get_receipt_voucher(self, obj):
         """الحصول على رابط Receipt Voucher"""
-        url = get_file_url(getattr(obj, 'receipt_voucher', None))
-        if url and self.context.get('request'):
-            return self.context.get('request').build_absolute_uri(f"/api/files/{url}")
-        return url
+        try:
+            url = get_file_url(getattr(obj, 'receipt_voucher', None))
+            if url and self.context.get('request'):
+                return self.context.get('request').build_absolute_uri(f"/api/files/{url}")
+            return url
+        except Exception as e:
+            logger.warning(f"Error getting receipt_voucher for Payment {obj.id}: {e}")
+            return None
     
     def get_bank_payment_attachments(self, obj):
         """الحصول على رابط Bank Payment Attachments"""
-        url = get_file_url(getattr(obj, 'bank_payment_attachments', None))
-        if url and self.context.get('request'):
-            return self.context.get('request').build_absolute_uri(f"/api/files/{url}")
-        return url
+        try:
+            url = get_file_url(getattr(obj, 'bank_payment_attachments', None))
+            if url and self.context.get('request'):
+                return self.context.get('request').build_absolute_uri(f"/api/files/{url}")
+            return url
+        except Exception as e:
+            logger.warning(f"Error getting bank_payment_attachments for Payment {obj.id}: {e}")
+            return None
     
     def get_actual_invoice_id(self, obj):
         """Get actual_invoice ID via reverse relationship"""
@@ -2484,10 +2521,14 @@ class ConsultantSerializer(serializers.ModelSerializer):
     
     def get_image_url(self, obj):
         """الحصول على رابط صورة الاستشاري"""
-        url = get_file_url(getattr(obj, 'image', None))
-        if url and self.context.get('request'):
-            return self.context.get('request').build_absolute_uri(f"/api/files/{url}")
-        return url
+        try:
+            url = get_file_url(getattr(obj, 'image', None))
+            if url and self.context.get('request'):
+                return self.context.get('request').build_absolute_uri(f"/api/files/{url}")
+            return url
+        except Exception as e:
+            logger.warning(f"Error getting image_url for Consultant {obj.id}: {e}")
+            return None
     
     def get_projects_count(self, obj):
         """عدد المشاريع المرتبطة"""
