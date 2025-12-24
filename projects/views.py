@@ -76,8 +76,8 @@ class ProjectViewSet(viewsets.ModelViewSet):
                     'payments',  # Reverse ForeignKey
                     'variations',  # Reverse ForeignKey
                     'actual_invoices',  # Reverse ForeignKey - اسم صحيح من النموذج
-                    'projectconsultant_set',  # Reverse ForeignKey
-                    'projectconsultant_set__consultant',  # Nested prefetch
+                    'consultants',  # Reverse ForeignKey - الاسم الصحيح من ProjectConsultant model
+                    'consultants__consultant',  # Nested prefetch
                 )
             except Exception as e:
                 import logging
@@ -93,19 +93,24 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 return queryset
             
             # تصفية حسب tenant المستخدم
+            import logging
+            logger = logging.getLogger(__name__)
+            
             user_tenant = None
             if hasattr(self.request, 'tenant') and self.request.tenant:
                 user_tenant = self.request.tenant
+                logger.info(f"🔍 Found tenant from request: {user_tenant.name} (ID: {user_tenant.id})")
             elif hasattr(self.request.user, 'tenant') and self.request.user.tenant:
                 user_tenant = self.request.user.tenant
+                logger.info(f"🔍 Found tenant from user: {user_tenant.name} (ID: {user_tenant.id})")
             
             if user_tenant:
                 queryset = queryset.filter(tenant=user_tenant)
+                logger.info(f"✅ Filtering projects by tenant: {user_tenant.name} (ID: {user_tenant.id})")
             else:
                 # إذا لم يكن للمستخدم tenant، لا يعرض أي مشاريع
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.warning(f"User {self.request.user.email} has no tenant, returning empty queryset")
+                logger.warning(f"⚠️ User {self.request.user.email} (ID: {self.request.user.id}) has no tenant, returning empty queryset")
+                logger.warning(f"⚠️ User is_superuser: {self.request.user.is_superuser}")
                 queryset = queryset.none()
             
             return queryset

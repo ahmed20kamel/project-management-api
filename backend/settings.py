@@ -306,37 +306,54 @@ LOGGING = {
     },
     "root": {
         "handlers": ["console"],
-        "level": "INFO" if not DEBUG else "DEBUG",
+        "level": "WARNING",  # ✅ فقط warnings و errors
     },
     "loggers": {
         "django": {
             "handlers": ["console"],
-            "level": "INFO" if not DEBUG else "DEBUG",
+            "level": "WARNING",  # ✅ إخفاء كل logs عادية
+            "propagate": False,
+        },
+        # ✅ إخفاء database queries تماماً
+        "django.db.backends": {
+            "handlers": ["console"],
+            "level": "ERROR",  # ✅ فقط errors
             "propagate": False,
         },
         "django.request": {
             "handlers": ["console"],
-            "level": "ERROR" if not DEBUG else "WARNING",
+            "level": "ERROR",  # ✅ فقط errors
+            "propagate": False,
+        },
+        "django.server": {
+            "handlers": ["console"],
+            "level": "INFO",  # ✅ فقط HTTP requests (GET, POST, etc.)
             "propagate": False,
         },
         "projects": {
             "handlers": ["console"],
-            "level": "INFO",
+            "level": "WARNING",  # ✅ فقط warnings و errors
             "propagate": False,
         },
         "projects.views": {
             "handlers": ["console"],
-            "level": "INFO",
+            "level": "WARNING",  # ✅ إخفاء INFO logs
             "propagate": False,
         },
         "projects.serializers": {
             "handlers": ["console"],
-            "level": "WARNING" if not DEBUG else "INFO",
+            "level": "WARNING",
             "propagate": False,
         },
         "authentication": {
             "handlers": ["console"],
-            "level": "INFO",
+            "level": "WARNING",  # ✅ فقط warnings و errors
+            "propagate": False,
+        },
+        # ✅ إخفاء logs من rest_framework
+        "rest_framework": {
+            "handlers": ["console"],
+            "level": "WARNING",
             "propagate": False,
         },
     },
