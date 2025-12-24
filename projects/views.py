@@ -67,7 +67,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
             queryset = queryset.prefetch_related(
                 'payments',  # Reverse ForeignKey
                 'variations',  # Reverse ForeignKey
-                'actualinvoices',  # Reverse ForeignKey
+                'actual_invoices',  # Reverse ForeignKey - اسم صحيح من النموذج
                 'projectconsultant_set',  # Reverse ForeignKey
                 'projectconsultant_set__consultant',  # Nested prefetch
             )
