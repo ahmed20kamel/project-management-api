@@ -351,65 +351,76 @@ class TenantSettingsViewSet(viewsets.ModelViewSet):
             cache.set(cache_key, response_data, 60 * 5)
             return Response(response_data)
         elif request.method in ['PATCH', 'PUT']:
-            # ✅ مسح cache عند التحديث
-            cache.delete(cache_key)
-            cache.delete(f'tenant_theme_{tenant_id}')  # مسح theme cache أيضاً
-            
-            # التحقق من الصلاحيات: فقط Company Super Admin يمكنه التعديل
-            if not request.user.is_superuser:
-                if not is_company_admin(request.user):
-                    return Response(
-                        {'error': 'Only company super admin can update company settings'},
-                        status=status.HTTP_403_FORBIDDEN
-                    )
-            
-            # منع تعديل الحقول المحمية (email, subscription info)
-            protected_fields = ['company_email', 'max_users', 'max_projects', 
-                               'subscription_start_date', 'subscription_end_date', 'subscription_status']
-            for field in protected_fields:
-                if field in request.data:
-                    del request.data[field]
-            
             try:
-                settings = TenantSettings.objects.select_related('tenant').get(tenant=request.user.tenant)
-            except TenantSettings.DoesNotExist:
-                return Response(
-                    {'error': 'Tenant settings not found'},
-                    status=status.HTTP_404_NOT_FOUND
-                )
-            
-            # تحديث الإعدادات
-            serializer = self.get_serializer(
-                settings,
-                data=request.data,
-                partial=(request.method == 'PATCH'),
-                context={'request': request}
-            )
-            if serializer.is_valid():
-                # ✅ حفظ البيانات
-                instance = serializer.save()
+                # ✅ مسح cache عند التحديث
+                cache.delete(cache_key)
+                cache.delete(f'tenant_theme_{tenant_id}')  # مسح theme cache أيضاً
                 
-                # ✅ التأكد من حفظ البيانات في قاعدة البيانات
+                # التحقق من الصلاحيات: فقط Company Super Admin يمكنه التعديل
+                if not request.user.is_superuser:
+                    if not is_company_admin(request.user):
+                        return Response(
+                            {'error': 'Only company super admin can update company settings'},
+                            status=status.HTTP_403_FORBIDDEN
+                        )
+                
+                # ✅ منع تعديل الحقول المحمية (email, subscription info)
+                # نسخ request.data إلى dict قابل للتعديل
+                data_dict = dict(request.data) if hasattr(request.data, 'keys') else request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
+                protected_fields = ['company_email', 'max_users', 'max_projects', 
+                                   'subscription_start_date', 'subscription_end_date', 'subscription_status']
+                for field in protected_fields:
+                    if field in data_dict:
+                        del data_dict[field]
+                
+                try:
+                    settings = TenantSettings.objects.select_related('tenant').get(tenant=request.user.tenant)
+                except TenantSettings.DoesNotExist:
+                    return Response(
+                        {'error': 'Tenant settings not found'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+                
+                # ✅ تحديث الإعدادات
+                serializer = self.get_serializer(
+                    settings,
+                    data=data_dict,
+                    partial=(request.method == 'PATCH'),
+                    context={'request': request}
+                )
+                if serializer.is_valid():
+                    # ✅ حفظ البيانات
+                    instance = serializer.save()
+                    
+                    # ✅ التأكد من حفظ البيانات في قاعدة البيانات
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.info(f"TenantSettings updated for tenant {settings.tenant.id}")
+                    
+                    # ✅ إعادة تحميل من قاعدة البيانات للتأكد
+                    instance.refresh_from_db()
+                    
+                    log_audit(
+                        user=request.user,
+                        action='edit',
+                        model_name='TenantSettings',
+                        object_id=settings.tenant.id,
+                        description='Updated tenant settings',
+                        ip_address=get_client_ip(request)
+                    )
+                    
+                    # ✅ إعادة البيانات المحدثة
+                    response_serializer = self.get_serializer(instance, context={'request': request})
+                    return Response(response_serializer.data)
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            except Exception as e:
                 import logging
                 logger = logging.getLogger(__name__)
-                logger.info(f"TenantSettings updated for tenant {settings.tenant.id}")
-                
-                # ✅ إعادة تحميل من قاعدة البيانات للتأكد
-                instance.refresh_from_db()
-                
-                log_audit(
-                    user=request.user,
-                    action='edit',
-                    model_name='TenantSettings',
-                    object_id=settings.tenant.id,
-                    description='Updated tenant settings',
-                    ip_address=get_client_ip(request)
+                logger.error(f"Error updating tenant settings: {str(e)}", exc_info=True)
+                return Response(
+                    {'error': f'Internal server error: {str(e)}'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
-                
-                # ✅ إعادة البيانات المحدثة
-                response_serializer = self.get_serializer(instance, context={'request': request})
-                return Response(response_serializer.data)
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
     def theme(self, request):
