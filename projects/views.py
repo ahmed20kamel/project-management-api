@@ -16,7 +16,7 @@ from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import IsAuthenticated
 
 from .models import (
-    Project, SitePlan, SitePlanOwner, BuildingLicense, Contract, Awarding, Payment,
+    Project, SitePlan, SitePlanOwner, BuildingLicense, Contract, Awarding, StartOrder, Payment,
     Variation, ActualInvoice, Consultant, ProjectConsultant
 )
 from .serializers import (
@@ -25,6 +25,7 @@ from .serializers import (
     BuildingLicenseSerializer,
     ContractSerializer,
     AwardingSerializer,
+    StartOrderSerializer,
     PaymentSerializer,
     VariationSerializer,
     ActualInvoiceSerializer,
@@ -134,6 +135,21 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 logger.warning(f"⚠️ User is_superuser: {self.request.user.is_superuser}")
                 queryset = queryset.none()
             
+            # ✅ فلترة حسب approval_status إذا كان موجود في query parameters
+            approval_status = self.request.query_params.get('approval_status', None)
+            exclude_final_approved = self.request.query_params.get('exclude_final_approved', 'false').lower() == 'true'
+            
+            if approval_status:
+                queryset = queryset.filter(approval_status=approval_status)
+            elif exclude_final_approved:
+                # استبعاد المشاريع المعتمدة نهائياً (إظهار المشاريع قيد الموافقة)
+                queryset = queryset.exclude(approval_status='final_approved')
+            
+            # ✅ فلترة حسب internal_code إذا كان موجود في query parameters
+            internal_code = self.request.query_params.get('internal_code', None)
+            if internal_code:
+                queryset = queryset.filter(internal_code=internal_code)
+            
             return queryset
         except Exception as e:
             import logging
@@ -218,34 +234,9 @@ class ProjectViewSet(viewsets.ModelViewSet):
             except TenantSettings.DoesNotExist:
                 pass  # إذا لم تكن هناك إعدادات، نسمح بإنشاء المشروع
         
-        # التحقق من الصلاحيات: Staff User يحتاج موافقة
-        if requires_approval(self.request.user, 'Project'):
-            # إنشاء Pending Change بدلاً من إنشاء المشروع مباشرة
-            data = serializer.validated_data
-            pending_change = create_pending_change(
-                user=self.request.user,
-                action='create',
-                model_name='Project',
-                object_id='new',  # سيتم تحديثه بعد الموافقة
-                data=data,
-                tenant=tenant
-            )
-            # تسجيل Audit Log
-            log_audit(
-                user=self.request.user,
-                action='create',
-                model_name='Project',
-                description=f'Created project pending approval (ID: {pending_change.id})',
-                ip_address=get_client_ip(self.request)
-            )
-            # إرجاع رسالة للمستخدم
-            raise drf_serializers.ValidationError({
-                'message': 'تم إرسال طلب إنشاء المشروع للموافقة',
-                'pending_change_id': pending_change.id,
-                'requires_approval': True
-            })
-        
         # ربط المشروع بـ tenant
+        # ملاحظة: تم إزالة منطق requires_approval لأن المشاريع تُنشأ في حالة draft
+        # والمستخدم يرسلها للموافقة لاحقاً باستخدام action submit
         if tenant:
             serializer.save(tenant=tenant)
         else:
@@ -253,27 +244,29 @@ class ProjectViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def submit(self, request, pk=None):
-        """إرسال المشروع للموافقة"""
-        from authentication.utils import check_workflow_permission, log_audit, get_client_ip
+        """إرسال المشروع للموافقة (من المستخدم العادي)"""
+        from authentication.utils import can_submit_project, log_audit, get_client_ip
         from django.utils import timezone
         
         project = self.get_object()
         user = request.user
         
-        if not project.current_stage:
+        # التحقق من أن المشروع في حالة draft
+        if project.approval_status != 'draft':
             return Response(
-                {'error': 'Project has no current stage'},
+                {'error': f'Project must be in draft status to submit. Current status: {project.approval_status}'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # التحقق من الصلاحية
-        if not check_workflow_permission(user, project.current_stage, 'submit'):
+        # التحقق من الصلاحية (فقط User العادي يمكنه الإرسال)
+        if not can_submit_project(user, project):
             return Response(
-                {'error': 'Permission denied: You do not have permission to submit'},
+                {'error': 'Permission denied: Only regular users can submit projects for approval'},
                 status=status.HTTP_403_FORBIDDEN
             )
         
         # تحديث حالة الموافقة
+        old_status = project.approval_status
         project.approval_status = 'pending'
         project.save(update_fields=['approval_status'])
         
@@ -284,43 +277,51 @@ class ProjectViewSet(viewsets.ModelViewSet):
             model_name='Project',
             object_id=project.id,
             description=f'Submitted project for approval',
+            changes={'before': {'approval_status': old_status}, 'after': {'approval_status': 'pending'}},
             ip_address=get_client_ip(request),
-            stage=project.current_stage
+            stage=project.current_stage  # يمكن أن يكون None
         )
         
         return Response({
-            'message': 'Project submitted successfully',
+            'message': 'Project submitted successfully and is now pending approval',
             'approval_status': project.approval_status
         })
     
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
-        """الموافقة على المشروع"""
-        from authentication.utils import check_workflow_permission, log_audit, get_client_ip
+        """الموافقة على مرحلة المشروع (من المدير) - تنقل للمرحلة التالية"""
+        from authentication.utils import can_approve_stage, log_audit, get_client_ip
         from django.utils import timezone
+        from authentication.models import WorkflowStage
         
         project = self.get_object()
         user = request.user
         notes = request.data.get('notes', '')
         
-        if not project.current_stage:
+        # التحقق من أن المشروع في حالة pending
+        if project.approval_status != 'pending':
             return Response(
-                {'error': 'Project has no current stage'},
+                {'error': f'Project is not in pending status. Current status: {project.approval_status}'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # التحقق من الصلاحية
-        if not check_workflow_permission(user, project.current_stage, 'approve'):
+        # التحقق من الصلاحية (فقط Manager يمكنه الموافقة على المرحلة)
+        if not can_approve_stage(user, project):
             return Response(
-                {'error': 'Permission denied: You do not have permission to approve'},
+                {'error': 'Permission denied: Only managers can approve project stages'},
                 status=status.HTTP_403_FORBIDDEN
             )
         
-        # تحديث حالة الموافقة
+        # تحديث حالة الموافقة (موافقة المرحلة - ليست نهائية)
+        old_status = project.approval_status
         project.approval_status = 'approved'
         project.last_approved_by = user
         project.last_approved_at = timezone.now()
         project.approval_notes = notes
+        
+        # TODO: نقل المشروع للمرحلة التالية (إذا كانت هناك مرحلة تالية)
+        # حالياً نكتفي بتحديث الحالة فقط
+        
         project.save(update_fields=['approval_status', 'last_approved_by', 'last_approved_at', 'approval_notes'])
         
         # تسجيل العملية
@@ -329,21 +330,21 @@ class ProjectViewSet(viewsets.ModelViewSet):
             action='approve',
             model_name='Project',
             object_id=project.id,
-            description=f'Approved project',
-            changes={'before': {'approval_status': 'pending'}, 'after': {'approval_status': 'approved'}},
+            description=f'Approved project stage: {project.current_stage.name if project.current_stage else "N/A"}',
+            changes={'before': {'approval_status': old_status}, 'after': {'approval_status': 'approved'}},
             ip_address=get_client_ip(request),
             stage=project.current_stage
         )
         
         return Response({
-            'message': 'Project approved successfully',
+            'message': 'Project stage approved successfully. Project is now approved but needs final approval.',
             'approval_status': project.approval_status
         })
     
     @action(detail=True, methods=['post'])
     def reject(self, request, pk=None):
-        """رفض المشروع"""
-        from authentication.utils import check_workflow_permission, log_audit, get_client_ip
+        """رفض المشروع (من المدير)"""
+        from authentication.utils import can_approve_stage, log_audit, get_client_ip
         from django.utils import timezone
         
         project = self.get_object()
@@ -356,20 +357,22 @@ class ProjectViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        if not project.current_stage:
+        # التحقق من أن المشروع في حالة pending
+        if project.approval_status != 'pending':
             return Response(
-                {'error': 'Project has no current stage'},
+                {'error': f'Project must be in pending status to reject. Current status: {project.approval_status}'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # التحقق من الصلاحية
-        if not check_workflow_permission(user, project.current_stage, 'reject'):
+        # التحقق من الصلاحية (فقط Manager يمكنه الرفض)
+        if not can_approve_stage(user, project):
             return Response(
-                {'error': 'Permission denied: You do not have permission to reject'},
+                {'error': 'Permission denied: Only managers can reject projects'},
                 status=status.HTTP_403_FORBIDDEN
             )
         
         # تحديث حالة الموافقة
+        old_status = project.approval_status
         project.approval_status = 'rejected'
         project.last_approved_by = user
         project.last_approved_at = timezone.now()
@@ -383,14 +386,70 @@ class ProjectViewSet(viewsets.ModelViewSet):
             model_name='Project',
             object_id=project.id,
             description=f'Rejected project: {notes}',
-            changes={'before': {'approval_status': 'pending'}, 'after': {'approval_status': 'rejected'}},
+            changes={'before': {'approval_status': old_status}, 'after': {'approval_status': 'rejected'}},
             ip_address=get_client_ip(request),
             stage=project.current_stage
         )
         
         return Response({
-            'message': 'Project rejected',
+            'message': 'Project rejected. User can edit and resubmit.',
             'approval_status': project.approval_status
+        })
+    
+    @action(detail=True, methods=['post'])
+    def final_approve(self, request, pk=None):
+        """الاعتماد النهائي للمشروع (من Super Admin / Company Super Admin)"""
+        from authentication.utils import can_final_approve, log_audit, get_client_ip
+        from django.utils import timezone
+        
+        project = self.get_object()
+        user = request.user
+        notes = request.data.get('notes', '')
+        
+        # التحقق من الصلاحية (فقط Super Admin / Company Super Admin)
+        if not can_final_approve(user, project):
+            return Response(
+                {'error': 'Permission denied: Only super admins can final approve projects'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # ✅ السماح للسوبر يوزر بالاعتماد النهائي مباشرة من draft أو pending
+        # للمستخدمين الآخرين: يجب أن يكون المشروع في حالة approved أولاً
+        allowed_statuses = ['approved']
+        if user.is_superuser or is_company_admin(user):
+            # السوبر يوزر يمكنه الاعتماد النهائي من draft أو pending أو approved
+            allowed_statuses = ['draft', 'pending', 'approved']
+        
+        if project.approval_status not in allowed_statuses:
+            return Response(
+                {'error': f'Project must be approved first. Current status: {project.approval_status}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # تحديث حالة الاعتماد النهائي
+        old_status = project.approval_status
+        project.approval_status = 'final_approved'
+        project.final_approved_by = user
+        project.final_approved_at = timezone.now()
+        project.final_approval_notes = notes
+        project.save(update_fields=['approval_status', 'final_approved_by', 'final_approved_at', 'final_approval_notes'])
+        
+        # تسجيل العملية
+        log_audit(
+            user=user,
+            action='final_approve',
+            model_name='Project',
+            object_id=project.id,
+            description=f'Final approved project: {notes}',
+            changes={'before': {'approval_status': old_status}, 'after': {'approval_status': 'final_approved'}},
+            ip_address=get_client_ip(request),
+            stage=project.current_stage
+        )
+        
+        return Response({
+            'message': 'Project final approved successfully. Project is now active and can be used in the system.',
+            'approval_status': project.approval_status,
+            'is_final_approved': True
         })
     
     @action(detail=True, methods=['post'])
@@ -498,6 +557,55 @@ class ProjectViewSet(viewsets.ModelViewSet):
             'message': 'Project deletion approved and project deleted',
             'deleted_project_id': project_id
         })
+    
+    @action(detail=True, methods=['get'])
+    def permissions(self, request, pk=None):
+        """الحصول على الصلاحيات المتاحة للمستخدم الحالي على هذا المشروع"""
+        from authentication.utils import (
+            can_submit_project, can_approve_stage, can_final_approve,
+            can_edit_project, can_create_project, is_manager, is_company_admin
+        )
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        project = self.get_object()
+        user = request.user
+        
+        # Debug: طباعة معلومات المستخدم والمشروع
+        logger.info(f"🔐 Permissions check for user {user.email} (ID: {user.id}) on project {project.id}")
+        logger.info(f"   User role: {user.role.name if user.role else 'None'}")
+        logger.info(f"   User is_superuser: {user.is_superuser}")
+        logger.info(f"   Project approval_status: {project.approval_status}")
+        logger.info(f"   is_manager: {is_manager(user)}")
+        logger.info(f"   is_company_admin: {is_company_admin(user)}")
+        
+        can_approve = can_approve_stage(user, project) if project else False
+        can_submit = can_submit_project(user, project) if project else False
+        can_final = can_final_approve(user, project) if project else False
+        
+        logger.info(f"   can_approve: {can_approve}")
+        logger.info(f"   can_submit: {can_submit}")
+        logger.info(f"   can_final_approve: {can_final}")
+        
+        # تحذير إذا كان المستخدم Manager لكن can_approve = false
+        if is_manager(user) and project.approval_status == 'pending' and not can_approve:
+            logger.warning(f"⚠️ Manager {user.email} cannot approve project {project.id} in pending status!")
+            logger.warning(f"   This might be a bug in can_approve_stage function")
+        
+        permissions_dict = {
+            'can_view': True,  # جميع المستخدمين المصرح لهم يمكنهم المشاهدة
+            'can_edit': can_edit_project(user, project),
+            'can_create': can_create_project(user),
+            'can_submit': can_submit,
+            'can_approve': can_approve,
+            'can_reject': can_approve,  # نفس صلاحية الموافقة
+            'can_final_approve': can_final,
+            'can_delete': False,  # TODO: إضافة منطق حذف لاحقاً
+            'current_status': project.approval_status if project else None,
+            'is_final_approved': project.is_final_approved if project else False,
+        }
+        
+        return Response(permissions_dict)
     
     @action(detail=True, methods=['post'])
     def move_to_stage(self, request, pk=None):
@@ -796,14 +904,23 @@ class ContractViewSet(_ProjectChildViewSet):
     serializer_class = ContractSerializer
 
     def create(self, request, *args, **kwargs):
-        # التحقق من الصلاحيات: Staff User لا يمكنه إنشاء عقود
-        if not can_manage_contracts(request.user):
-            return Response(
-                {"error": "You do not have permission to create contracts. Only company admin can manage contracts."},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
         project = self._get_project()
+        
+        # السماح للمستخدمين بإنشاء عقود لمشاريعهم في حالة draft
+        if project.approval_status == 'draft':
+            # للمشاريع في حالة draft، نسمح لجميع المستخدمين المصرح لهم بإنشاء العقود
+            # (جزء من عملية إنشاء المشروع - المستخدم يدخل البيانات)
+            # لا نحتاج للتحقق من can_edit_project لأنها قد تعتمد على workflow stages
+            # التي قد لا تكون موجودة بعد
+            pass  # نسمح بإنشاء العقد للمشاريع في حالة draft
+        else:
+            # للمشاريع غير draft، يحتاج صلاحية إدارة العقود
+            if not can_manage_contracts(request.user):
+                return Response(
+                    {"error": "You do not have permission to create contracts. Only company admin can manage contracts."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
         if hasattr(project, "contract"):
             return Response(
                 {"detail": "Contract already exists for this project."},
@@ -812,13 +929,21 @@ class ContractViewSet(_ProjectChildViewSet):
         return super().create(request, *args, **kwargs)
     
     def perform_update(self, serializer):
-        # التحقق من الصلاحيات: Staff User لا يمكنه تعديل عقود
-        if not can_manage_contracts(self.request.user):
-            from rest_framework import serializers as drf_serializers
-            raise drf_serializers.ValidationError({
-                'error': 'You do not have permission to update contracts. Only company admin can manage contracts.'
-            })
-        serializer.save(project=self._get_project())
+        project = self._get_project()
+        
+        # السماح للمستخدمين بتعديل عقود مشاريعهم في حالة draft
+        if project.approval_status == 'draft':
+            # للمشاريع في حالة draft، نسمح لجميع المستخدمين المصرح لهم بتعديل العقود
+            # (جزء من عملية تعديل المشروع - المستخدم يدخل البيانات)
+            pass  # نسمح بتعديل العقد للمشاريع في حالة draft
+        else:
+            # للمشاريع غير draft، يحتاج صلاحية إدارة العقود
+            if not can_manage_contracts(self.request.user):
+                from rest_framework import serializers as drf_serializers
+                raise drf_serializers.ValidationError({
+                    'error': 'You do not have permission to update contracts. Only company admin can manage contracts.'
+                })
+        serializer.save(project=project)
     
     def perform_destroy(self, instance):
         # التحقق من الصلاحيات: Staff User لا يمكنه حذف عقود
@@ -842,6 +967,23 @@ class AwardingViewSet(_ProjectChildViewSet):
         if hasattr(project, "awarding"):
             return Response(
                 {"detail": "Awarding already exists for this project."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().create(request, *args, **kwargs)
+
+
+# ===============================
+# StartOrder (OneToOne)
+# ===============================
+class StartOrderViewSet(_ProjectChildViewSet):
+    queryset = StartOrder.objects.all().order_by("-created_at")
+    serializer_class = StartOrderSerializer
+
+    def create(self, request, *args, **kwargs):
+        project = self._get_project()
+        if hasattr(project, "start_order"):
+            return Response(
+                {"detail": "Start Order already exists for this project."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return super().create(request, *args, **kwargs)

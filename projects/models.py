@@ -103,8 +103,9 @@ class Project(TimeStampedModel):
         choices=[
             ('draft', 'Draft'),
             ('pending', 'Pending Approval'),
-            ('approved', 'Approved'),
+            ('approved', 'Approved'),  # موافقة المرحلة (من المدير)
             ('rejected', 'Rejected'),
+            ('final_approved', 'Final Approved'),  # الاعتماد النهائي (من Super Admin)
             ('delete_requested', 'Delete Requested'),
             ('delete_approved', 'Delete Approved'),
         ],
@@ -146,6 +147,34 @@ class Project(TimeStampedModel):
     )
     last_approved_at = models.DateTimeField(null=True, blank=True)
     approval_notes = models.TextField(blank=True, help_text="ملاحظات الموافقة/الرفض")
+    
+    # الاعتماد النهائي (من Super Admin / Company Super Admin)
+    final_approved_by = models.ForeignKey(
+        'authentication.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='final_approvals',
+        help_text="المستخدم الذي أعتمد المشروع نهائياً"
+    )
+    final_approved_at = models.DateTimeField(null=True, blank=True, help_text="تاريخ الاعتماد النهائي")
+    final_approval_notes = models.TextField(blank=True, help_text="ملاحظات الاعتماد النهائي")
+    
+    @property
+    def is_final_approved(self):
+        """التحقق من أن المشروع معتمد نهائياً"""
+        return self.approval_status == 'final_approved'
+
+    class Meta:
+        verbose_name = "مشروع"
+        verbose_name_plural = "مشاريع"
+        ordering = ['-created_at']
+        # ✅ منع تكرار internal_code داخل نفس الشركة (tenant)
+        # ملاحظة: unique_together لا يعمل بشكل جيد مع blank=True
+        # لذلك نستخدم validation في serializer للتحقق من التكرار
+        indexes = [
+            models.Index(fields=['tenant', 'internal_code']),
+        ]
 
     def __str__(self):
         return self.name or f"Project #{self.id}"
@@ -637,9 +666,7 @@ class Contract(TimeStampedModel):
     total_owner_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     project_duration_months = models.PositiveIntegerField(default=0)
 
-    start_order_date = models.DateField(null=True, blank=True)
     project_end_date = models.DateField(null=True, blank=True)
-    start_order_notes = models.TextField(blank=True, help_text="ملاحظات أمر المباشرة")
 
     # Owner consultant fees
     owner_includes_consultant = models.BooleanField(default=False)
@@ -671,24 +698,22 @@ class Contract(TimeStampedModel):
     # المرفقات الديناميكية
     attachments = models.JSONField(default=list, blank=True, help_text="مرفقات العقد الديناميكية")
     
-    # التمديدات
-    extensions = models.JSONField(
-        default=list, 
-        blank=True, 
-        help_text="قائمة التمديدات: [{'reason': 'string', 'days': int, 'months': int, 'extension_date': 'string', 'approval_number': 'string', 'file_url': 'string', 'file_name': 'string'}, ...]"
-    )
-    
     # الملفات القديمة (للتوافق مع البيانات الموجودة)
     contract_file = models.FileField(upload_to="contracts/main/", null=True, blank=True)
     contract_appendix_file = models.FileField(upload_to="contracts/appendix/", null=True, blank=True)
     contract_explanation_file = models.FileField(upload_to="contracts/explanations/", null=True, blank=True)
-    start_order_file = models.FileField(upload_to="contracts/start_orders/", null=True, blank=True)
     
     # ✅ المرفقات الثابتة
     quantities_table_file = models.FileField(upload_to="contracts/quantities/", null=True, blank=True, help_text="جدول الكميات")
     approved_materials_table_file = models.FileField(upload_to="contracts/materials/", null=True, blank=True, help_text="جدول المواد المعتمدة")
     price_offer_file = models.FileField(upload_to="contracts/price_offer/", null=True, blank=True, help_text="عرض السعر")
-    contractual_drawings_file = models.FileField(upload_to="contracts/drawings/", null=True, blank=True, help_text="مخططات تعاقدية")
+    # ✅ المخططات التعاقدية (مقسمة إلى 4 أنواع)
+    mep_drawings_file = models.FileField(upload_to="contracts/drawings/mep/", null=True, blank=True, help_text="مخططات MEP")
+    architectural_drawings_file = models.FileField(upload_to="contracts/drawings/architectural/", null=True, blank=True, help_text="المخططات المعمارية")
+    structural_drawings_file = models.FileField(upload_to="contracts/drawings/structural/", null=True, blank=True, help_text="المخططات الإنشائية")
+    decoration_drawings_file = models.FileField(upload_to="contracts/drawings/decoration/", null=True, blank=True, help_text="مخططات الديكور")
+    # ⚠️ الحقل القديم - سيتم إزالته بعد migration
+    contractual_drawings_file = models.FileField(upload_to="contracts/drawings/", null=True, blank=True, help_text="مخططات تعاقدية (قديم - سيتم إزالته)")
     general_specifications_file = models.FileField(upload_to="contracts/specifications/", null=True, blank=True, help_text="المواصفات العامة والخاصة")
 
     def __str__(self):
@@ -719,23 +744,50 @@ class Awarding(TimeStampedModel):
         return f"Awarding for {self.project.name or self.project_id}"
 
 
+# ====== أمر المباشرة ======
+class StartOrder(TimeStampedModel):
+    project = models.OneToOneField(Project, on_delete=models.CASCADE, related_name="start_order")
+
+    # تاريخ أمر المباشرة
+    start_order_date = models.DateField(null=True, blank=True)
+    
+    # ملاحظات أمر المباشرة
+    start_order_notes = models.TextField(blank=True, help_text="ملاحظات أمر المباشرة")
+    
+    # ملف أمر المباشرة
+    start_order_file = models.FileField(upload_to="start_orders/", null=True, blank=True)
+    
+    # التمديدات
+    extensions = models.JSONField(
+        default=list, 
+        blank=True, 
+        help_text="قائمة التمديدات: [{'reason': 'string', 'days': int, 'months': int, 'extension_date': 'string', 'approval_number': 'string', 'file_url': 'string', 'file_name': 'string'}, ...]"
+    )
+    
+    # تاريخ نهاية المشروع (محسوب تلقائياً)
+    project_end_date = models.DateField(null=True, blank=True, help_text="تاريخ نهاية المشروع محسوب بناءً على start_order_date + project_duration_months + extensions")
+
+    def __str__(self):
+        return f"Start Order for {self.project.name or self.project_id}"
+
+
 # ====== أوامر التغيير السعري (Price Change Orders) ======
 class Variation(TimeStampedModel):
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="variations")
     variation_number = models.CharField(max_length=100, blank=True, unique=True, help_text="رقم التعديل")
     description = models.TextField(blank=True, help_text="الوصف")
-    final_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), validators=[MinValueValidator(Decimal('0'))], help_text="المبلغ الفعلي")
-    consultant_fees_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('0'), validators=[MinValueValidator(Decimal('0')), MaxValueValidator(Decimal('100'))], help_text="نسبة أتعاب الاستشاري (%) من المبلغ الفعلي")
-    consultant_fees = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), validators=[MinValueValidator(Decimal('0'))], help_text="أتعاب الاستشاري (محسوبة تلقائياً من النسبة)")
-    contractor_engineer_fees = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), validators=[MinValueValidator(Decimal('0'))], help_text="مهندس المقاول (Head and Profit) (مبلغ ثابت)")
-    total_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), validators=[MinValueValidator(Decimal('0'))], help_text="المبلغ الإجمالي")
-    discount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), validators=[MinValueValidator(Decimal('0'))], help_text="الخصم")
-    net_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), validators=[MinValueValidator(Decimal('0'))], help_text="المبلغ الصافي")
-    vat = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), validators=[MinValueValidator(Decimal('0'))], help_text="الضريبة")
-    net_amount_with_vat = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), validators=[MinValueValidator(Decimal('0'))], help_text="المبلغ الصافي بالضريبة")
+    final_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), help_text="المبلغ الفعلي")
+    consultant_fees_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('0'), validators=[MaxValueValidator(Decimal('100'))], help_text="نسبة أتعاب الاستشاري (%) من المبلغ الفعلي")
+    consultant_fees = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), help_text="أتعاب الاستشاري (محسوبة تلقائياً من النسبة)")
+    contractor_engineer_fees = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), help_text="مهندس المقاول (Head and Profit) (مبلغ ثابت)")
+    total_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), help_text="المبلغ الإجمالي")
+    discount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), help_text="الخصم")
+    net_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), help_text="المبلغ الصافي")
+    vat = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), help_text="الضريبة")
+    net_amount_with_vat = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), help_text="المبلغ الصافي بالضريبة")
     variation_invoice_file = models.FileField(upload_to='variations/invoices/', blank=True, null=True, help_text="فاتورة التعديل")
     # Legacy fields (kept for backward compatibility)
-    amount = models.DecimalField(max_digits=14, decimal_places=2, validators=[MinValueValidator(Decimal('0'))], help_text="المبلغ (legacy - use final_amount)")
+    amount = models.DecimalField(max_digits=14, decimal_places=2, help_text="المبلغ (legacy - use final_amount)")
     approval_date = models.DateField(null=True, blank=True)
     approved_by = models.CharField(max_length=200, blank=True)
     attachments = models.JSONField(default=list, blank=True, help_text="List of attachment file paths/URLs")

@@ -1,11 +1,13 @@
 # backend/projects/urls.py
-from django.urls import path
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
 from .views import (
     ProjectViewSet,
     SitePlanViewSet,
     BuildingLicenseViewSet,
     ContractViewSet,
     AwardingViewSet,
+    StartOrderViewSet,
     PaymentViewSet,
     VariationViewSet,
     ActualInvoiceViewSet,
@@ -14,11 +16,9 @@ from .views import (
     download_file,
 )
 
-# Projects
-project_list = ProjectViewSet.as_view({"get": "list", "post": "create"})
-project_detail = ProjectViewSet.as_view(
-    {"get": "retrieve", "patch": "partial_update", "delete": "destroy"}
-)
+# استخدام Router للمشاريع لتفعيل الـ @action decorators
+router = DefaultRouter()
+router.register(r'projects', ProjectViewSet, basename='project')
 
 # SitePlan
 siteplan_list = SitePlanViewSet.as_view({"get": "list", "post": "create"})
@@ -41,6 +41,12 @@ contract_detail = ContractViewSet.as_view(
 # Awarding ⬇️
 awarding_list = AwardingViewSet.as_view({"get": "list", "post": "create"})
 awarding_detail = AwardingViewSet.as_view(
+    {"get": "retrieve", "patch": "partial_update", "delete": "destroy"}
+)
+
+# StartOrder ⬇️
+startorder_list = StartOrderViewSet.as_view({"get": "list", "post": "create"})
+startorder_detail = StartOrderViewSet.as_view(
     {"get": "retrieve", "patch": "partial_update", "delete": "destroy"}
 )
 
@@ -76,8 +82,8 @@ project_consultant_detail = ProjectConsultantViewSet.as_view(
 )
 
 urlpatterns = [
-    path("projects/", project_list, name="project-list"),
-    path("projects/<int:pk>/", project_detail, name="project-detail"),
+    # استخدام router للمشاريع (يتضمن كل الـ actions تلقائياً)
+    path("", include(router.urls)),
 
     path("projects/<int:project_pk>/siteplan/", siteplan_list, name="siteplan-list"),
     path("projects/<int:project_pk>/siteplan/<int:pk>/", siteplan_detail, name="siteplan-detail"),
@@ -92,6 +98,10 @@ urlpatterns = [
     # ✅ Awarding endpoints
     path("projects/<int:project_pk>/awarding/", awarding_list, name="awarding-list"),
     path("projects/<int:project_pk>/awarding/<int:pk>/", awarding_detail, name="awarding-detail"),
+    
+    # ✅ StartOrder endpoints
+    path("projects/<int:project_pk>/start-order/", startorder_list, name="startorder-list"),
+    path("projects/<int:project_pk>/start-order/<int:pk>/", startorder_detail, name="startorder-detail"),
     
     # ✅ Payment endpoints
     path("payments/", payment_list, name="payment-list"),

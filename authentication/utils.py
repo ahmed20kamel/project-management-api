@@ -169,3 +169,104 @@ def can_manage_payments(user):
     
     # Staff User لا يمكنه إدارة الدفعات
     return False
+
+
+def can_submit_project(user, project):
+    """التحقق من صلاحية المستخدم لإرسال المشروع للموافقة"""
+    # فقط المستخدم العادي (User/Staff) يمكنه الإرسال
+    if user.is_superuser:
+        return False  # Super Admin لا يرسل، يعتمد فقط
+    
+    if is_company_admin(user):
+        return False  # Company Admin لا يرسل، يعتمد فقط
+    
+    if is_manager(user):
+        return False  # Manager لا يرسل، يوافق على المراحل فقط
+    
+    # Staff User / User العادي يمكنه الإرسال
+    # السماح للمستخدم العادي بإرسال المشروع إذا كان في حالة draft (حتى بدون current_stage)
+    if project.approval_status == 'draft':
+        return True
+    # إذا كان هناك current_stage، نتحقق من workflow permission أيضاً
+    if project.current_stage:
+        return check_workflow_permission(user, project.current_stage, 'submit')
+    
+    return False
+
+
+def can_approve_stage(user, project):
+    """التحقق من صلاحية المستخدم للموافقة على مرحلة (Manager)"""
+    if user.is_superuser:
+        return False  # Super Admin يستخدم final_approve
+    
+    if is_company_admin(user):
+        return False  # Company Admin يستخدم final_approve
+    
+    # فقط Manager يمكنه الموافقة على المرحلة
+    # السماح للمدير بالموافقة إذا كان المشروع في حالة pending (حتى بدون current_stage)
+    if is_manager(user):
+        # إذا كان المشروع في حالة pending، المدير يمكنه الموافقة
+        if project.approval_status == 'pending':
+            return True
+        # إذا كان هناك current_stage، نتحقق من workflow permission أيضاً
+        if project.current_stage:
+            return check_workflow_permission(user, project.current_stage, 'approve')
+    
+    return False
+
+
+def can_final_approve(user, project):
+    """التحقق من صلاحية المستخدم للاعتماد النهائي (Super Admin / Company Super Admin)"""
+    if user.is_superuser:
+        return True  # Super Admin يمكنه الاعتماد النهائي دائماً
+    
+    if is_company_admin(user):
+        return True  # Company Super Admin يمكنه الاعتماد النهائي
+    
+    return False
+
+
+def can_edit_project(user, project):
+    """التحقق من صلاحية تعديل المشروع"""
+    # إذا كان المشروع معتمد نهائياً، لا يمكن التعديل إلا من Super Admin
+    if project.is_final_approved:
+        return user.is_superuser or is_company_admin(user)
+    
+    # إذا كان المشروع في حالة pending، لا يمكن التعديل إلا من الشخص الذي أرسله
+    if project.approval_status == 'pending':
+        # يمكن للمدير أو Super Admin التعديل حتى في حالة pending
+        if is_manager(user) or user.is_superuser or is_company_admin(user):
+            return True
+        # المستخدم العادي يمكنه التعديل فقط إذا كان هو من أرسل المشروع
+        # (سنحتاج إضافة created_by field لاحقاً)
+        return False
+    
+    # في حالة draft أو approved، يمكن التعديل حسب الصلاحيات العادية
+    if user.is_superuser or is_company_admin(user):
+        return True
+    
+    if is_manager(user):
+        return True
+    
+    # User العادي يمكنه التعديل في حالة draft
+    if project.approval_status == 'draft':
+        if project.current_stage:
+            return check_workflow_permission(user, project.current_stage, 'edit')
+    
+    return False
+
+
+def can_create_project(user):
+    """التحقق من صلاحية إنشاء مشروع جديد"""
+    # جميع المستخدمين المصرح لهم يمكنهم إنشاء مشاريع
+    if user.is_superuser:
+        return True
+    
+    if is_company_admin(user):
+        return True
+    
+    if is_manager(user):
+        return True
+    
+    # User العادي يمكنه إنشاء مشروع (لكن يحتاج موافقة)
+    return True

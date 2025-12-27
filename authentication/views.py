@@ -723,20 +723,16 @@ class UserViewSet(viewsets.ModelViewSet):
         """التحقق من الصلاحيات قبل التحديث"""
         instance = serializer.instance
         
+        # الحصول على role من validated_data (لأن role_id له source='role')
+        # role_id في request يتم تحويله تلقائياً إلى role في validated_data ك Role object
+        role_obj = serializer.validated_data.get('role')
+        
+        # role_obj يجب أن يكون Role object (بسبب source='role' في role_id field)
+        
         # Superuser يمكنه تعديل أي مستخدم
         if self.request.user.is_superuser:
-            # التحقق من الدور إذا تم تحديثه
-            role_id = serializer.validated_data.get('role_id') or serializer.validated_data.get('role')
-            if role_id:
-                from .models import Role
-                try:
-                    role = Role.objects.get(pk=role_id)
-                    # Super Admin يمكنه تعيين أي دور
-                    pass
-                except Role.DoesNotExist:
-                    raise drf_serializers.ValidationError({
-                        'error': 'الدور المحدد غير موجود'
-                    })
+            # Super Admin يمكنه تعيين أي دور
+            # role سيتم حفظه تلقائياً من خلال serializer.save()
             serializer.save()
             return
         
@@ -748,21 +744,14 @@ class UserViewSet(viewsets.ModelViewSet):
                 })
             
             # التحقق من أن الدور المحدد هو من الأدوار الخاصة بالشركة فقط
-            role_id = serializer.validated_data.get('role_id') or serializer.validated_data.get('role')
-            if role_id:
-                from .models import Role
-                try:
-                    role = Role.objects.get(pk=role_id)
-                    # التأكد من أن الدور هو من الأدوار الخاصة بالشركة
-                    if role.name not in ['company_super_admin', 'Manager', 'staff_user']:
-                        raise drf_serializers.ValidationError({
-                            'error': 'يمكن تعيين الأدوار الخاصة بالشركة فقط (مدير الشركة، مدير المشاريع، أو موظف)'
-                        })
-                except Role.DoesNotExist:
+            if role_obj:
+                role_name = role_obj.name if hasattr(role_obj, 'name') else None
+                if role_name and role_name not in ['company_super_admin', 'Manager', 'staff_user']:
                     raise drf_serializers.ValidationError({
-                        'error': 'الدور المحدد غير موجود'
+                        'error': 'يمكن تعيين الأدوار الخاصة بالشركة فقط (مدير الشركة، مدير المشاريع، أو موظف)'
                     })
             
+            # role سيتم حفظه تلقائياً من خلال serializer.save()
             serializer.save()
             return
         

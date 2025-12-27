@@ -1,12 +1,13 @@
 import re
 import json
 import logging
+from datetime import timedelta
 from django.db import models
 from django.conf import settings
 from django.core.files.storage import default_storage
 from rest_framework import serializers
 from .models import (
-    Project, SitePlan, SitePlanOwner, BuildingLicense, Contract, Awarding, Payment,
+    Project, SitePlan, SitePlanOwner, BuildingLicense, Contract, Awarding, StartOrder, Payment,
     Variation, ActualInvoice, Consultant, ProjectConsultant
 )
 
@@ -280,12 +281,15 @@ class ProjectSerializer(serializers.ModelSerializer):
     delete_requested_by = serializers.SerializerMethodField()
     delete_approved_by = serializers.SerializerMethodField()
     last_approved_by = serializers.SerializerMethodField()
+    final_approved_by = serializers.SerializerMethodField()
+    is_final_approved = serializers.ReadOnlyField()
 
     # ✅ Fields للبيانات المطلوبة عند استخدام include parameter
     siteplan_data = serializers.SerializerMethodField()
     license_data = serializers.SerializerMethodField()
     contract_data = serializers.SerializerMethodField()
     awarding_data = serializers.SerializerMethodField()
+    start_order_data = serializers.SerializerMethodField()
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -308,6 +312,8 @@ class ProjectSerializer(serializers.ModelSerializer):
                 self.fields.pop('contract_data', None)
             if 'awarding' not in include_list:
                 self.fields.pop('awarding_data', None)
+            if 'start_order' not in include_list:
+                self.fields.pop('start_order_data', None)
     
     def get_siteplan_data(self, obj):
         """إرجاع بيانات SitePlan إذا كانت موجودة"""
@@ -365,6 +371,20 @@ class ProjectSerializer(serializers.ModelSerializer):
             logger.warning(f"Error getting awarding_data for project {obj.id}: {e}")
         return None
     
+    def get_start_order_data(self, obj):
+        """إرجاع بيانات StartOrder إذا كانت موجودة"""
+        try:
+            if hasattr(obj, 'start_order') and obj.start_order:
+                # ✅ استخدام الاسم مباشرة من نفس الملف (lazy import)
+                import sys
+                current_module = sys.modules[__name__]
+                StartOrderSerializer = getattr(current_module, 'StartOrderSerializer', None)
+                if StartOrderSerializer:
+                    return StartOrderSerializer(obj.start_order, context=self.context).data
+        except Exception as e:
+            logger.warning(f"Error getting start_order_data for project {obj.id}: {e}")
+        return None
+    
     def get_current_stage(self, obj):
         try:
             if obj.current_stage:
@@ -413,6 +433,18 @@ class ProjectSerializer(serializers.ModelSerializer):
         except Exception as e:
             logger.warning(f"Error getting last_approved_by for project {obj.id}: {e}")
         return None
+    
+    def get_final_approved_by(self, obj):
+        try:
+            if obj.final_approved_by:
+                return {
+                    'id': obj.final_approved_by.id,
+                    'email': getattr(obj.final_approved_by, 'email', ''),
+                    'full_name': obj.final_approved_by.get_full_name() if hasattr(obj.final_approved_by, 'get_full_name') else '',
+                }
+        except Exception as e:
+            logger.warning(f"Error getting final_approved_by for project {obj.id}: {e}")
+        return None
 
     class Meta:
         model  = Project
@@ -426,9 +458,10 @@ class ProjectSerializer(serializers.ModelSerializer):
             "delete_requested_by", "delete_requested_at", "delete_reason",
             "delete_approved_by", "delete_approved_at",
             "last_approved_by", "last_approved_at", "approval_notes",
+            "final_approved_by", "final_approved_at", "final_approval_notes", "is_final_approved",
             "created_at", "updated_at",
             # ✅ Fields للبيانات المطلوبة عند استخدام include parameter
-            "siteplan_data", "license_data", "contract_data", "awarding_data",
+            "siteplan_data", "license_data", "contract_data", "awarding_data", "start_order_data",
         ]
         extra_kwargs = {
             "name": {"required": False, "allow_blank": True},
@@ -443,6 +476,7 @@ class ProjectSerializer(serializers.ModelSerializer):
         - يسمح بأي أرقام
         - يضيف حرف M في البداية
         - يشترط أن يكون آخر رقم فردياً (1,3,5,7,9)
+        - يتحقق من عدم تكرار الكود داخل نفس الشركة (tenant)
         """
         if value in (None, ""):
             return value
@@ -458,6 +492,33 @@ class ProjectSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Last digit of internal code must be odd (1,3,5,7,9).")
 
         normalized = ("M" + digits)[:40]
+        
+        # ✅ التحقق من عدم تكرار الكود داخل نفس الشركة (tenant)
+        instance = self.instance  # المشروع الحالي (None إذا كان create)
+        tenant = None
+        
+        # الحصول على tenant من instance أو من request
+        if instance and hasattr(instance, 'tenant'):
+            tenant = instance.tenant
+        elif hasattr(self, 'context') and 'request' in self.context:
+            user = self.context['request'].user
+            if hasattr(user, 'tenant'):
+                tenant = user.tenant
+        
+        if tenant and normalized:
+            # البحث عن مشاريع أخرى بنفس الكود في نفس الشركة
+            from projects.models import Project
+            queryset = Project.objects.filter(tenant=tenant, internal_code=normalized)
+            
+            # إذا كان update، نستثني المشروع الحالي
+            if instance and instance.pk:
+                queryset = queryset.exclude(pk=instance.pk)
+            
+            if queryset.exists():
+                raise serializers.ValidationError(
+                    f"الكود الداخلي '{normalized}' مستخدم بالفعل في مشروع آخر. يرجى استخدام كود مختلف."
+                )
+        
         return normalized
 
     def get_display_name(self, obj):
@@ -1504,19 +1565,21 @@ class ContractSerializer(serializers.ModelSerializer):
     )
     license_snapshot = serializers.JSONField(read_only=True)
     
-    # ✅ إرجاع start_order_exists بناءً على وجود الملف أو التاريخ
-    start_order_exists = serializers.SerializerMethodField()
-    
     # الملفات
     contract_file = serializers.FileField(required=False, allow_null=True)
     contract_appendix_file = serializers.FileField(required=False, allow_null=True)
     contract_explanation_file = serializers.FileField(required=False, allow_null=True)
-    start_order_file = serializers.FileField(required=False, allow_null=True)
     
     # ✅ المرفقات الثابتة
     quantities_table_file = serializers.FileField(required=False, allow_null=True)
     approved_materials_table_file = serializers.FileField(required=False, allow_null=True)
     price_offer_file = serializers.FileField(required=False, allow_null=True)
+    # ✅ المخططات التعاقدية (مقسمة إلى 4 أنواع)
+    mep_drawings_file = serializers.FileField(required=False, allow_null=True)
+    architectural_drawings_file = serializers.FileField(required=False, allow_null=True)
+    structural_drawings_file = serializers.FileField(required=False, allow_null=True)
+    decoration_drawings_file = serializers.FileField(required=False, allow_null=True)
+    # ⚠️ الحقل القديم - سيتم إزالته بعد migration
     contractual_drawings_file = serializers.FileField(required=False, allow_null=True)
     general_specifications_file = serializers.FileField(required=False, allow_null=True)
     
@@ -1540,9 +1603,7 @@ class ContractSerializer(serializers.ModelSerializer):
             "contractor_phone", "contractor_email",
             # القيم والمدة
             "total_project_value", "total_bank_value", "total_owner_value", "project_duration_months",
-            "start_order_date", "project_end_date",
-            # أمر المباشرة
-            "start_order_exists",
+            "project_end_date",
             # أتعاب (المالك)
             "owner_includes_consultant", "owner_fee_design_percent", "owner_fee_supervision_percent",
             "owner_fee_extra_mode", "owner_fee_extra_value",
@@ -1550,24 +1611,23 @@ class ContractSerializer(serializers.ModelSerializer):
             "bank_includes_consultant", "bank_fee_design_percent", "bank_fee_supervision_percent",
             "bank_fee_extra_mode", "bank_fee_extra_value",
             # الملفات
-            "contract_file", "contract_appendix_file", "contract_explanation_file", "start_order_file",
+            "contract_file", "contract_appendix_file", "contract_explanation_file",
             # المرفقات الثابتة
             "quantities_table_file", "approved_materials_table_file", "price_offer_file",
-            "contractual_drawings_file", "general_specifications_file",
+            # المخططات التعاقدية (مقسمة)
+            "mep_drawings_file", "architectural_drawings_file", "structural_drawings_file", "decoration_drawings_file",
+            # ⚠️ الحقل القديم - سيتم إزالته بعد migration
+            "contractual_drawings_file",
+            "general_specifications_file",
             # المرفقات الديناميكية
             "attachments",
-            # التمديدات
-            "extensions",
             # الملاحظات
             "general_notes",
-            "start_order_notes",
             # اللقطة
             "license_snapshot",
-            # أمر المباشرة
-            "start_order_exists",
             "created_at", "updated_at",
         ]
-        read_only_fields = ["project", "license_snapshot", "start_order_exists", "created_at", "updated_at"]
+        read_only_fields = ["project", "license_snapshot", "created_at", "updated_at"]
 
     def to_internal_value(self, data):
         """دعم owners كسلسلة JSON في multipart: owners='[{"owner_name_ar":"..."}, ...]'"""
@@ -1638,45 +1698,34 @@ class ContractSerializer(serializers.ModelSerializer):
                 owners_parsed = []
         
         # ✅ إزالة owners من data قبل استدعاء super() لتجنب أخطاء التحقق من النوع
-        # ⚠️ نستخدم data مباشرة (بدون نسخ) لأن QueryDict يحتوي على ملفات غير قابلة للنسخ
+        # ⚠️ نستخدم data مباشرة (بدون نسخ) لأن QueryDict قد يحتوي على ملفات غير قابلة للنسخ
         owners_removed = False
         owners_value = None
+        data_to_use = data  # البيانات المستخدمة في super().to_internal_value()
         try:
             from django.http import QueryDict
             if isinstance(data, QueryDict):
                 # ✅ حفظ قيمة owners ثم إزالتها
                 if "owners" in data:
                     owners_value = data.get("owners")
-                    # ✅ إزالة owners من QueryDict
-                    data._mutable = True
-                    data.pop("owners", None)
+                    # ✅ إنشاء نسخة من QueryDict بدون owners
+                    data_to_use = QueryDict(mutable=True)
+                    for key in data.keys():
+                        if key != "owners":
+                            data_to_use[key] = data[key]
                     owners_removed = True
             elif isinstance(data, dict):
-                owners_value = data.pop("owners", None)
+                # ✅ إنشاء نسخة من dict بدون owners
+                data_to_use = {k: v for k, v in data.items() if k != "owners"}
+                if "owners" in data:
+                    owners_value = data["owners"]
                 owners_removed = True
-            elif hasattr(data, 'pop'):
-                try:
-                    owners_value = data.pop("owners", None)
-                    owners_removed = True
-                except:
-                    pass
         except Exception as e:
-            logger.warning(f"Error removing owners from data: {e}")
+            logger.warning(f"Error preparing data copy: {e}")
+            data_to_use = data
         
         # ✅ استدعاء super() بدون owners
-        ret = super().to_internal_value(data)
-        
-        # ✅ إعادة owners إلى data إذا كنا قد أزلناها (للمحافظة على البيانات الأصلية)
-        if owners_removed and owners_value is not None:
-            try:
-                from django.http import QueryDict
-                if isinstance(data, QueryDict):
-                    data._mutable = True
-                    data.appendlist("owners", owners_value)
-                elif isinstance(data, dict):
-                    data["owners"] = owners_value
-            except:
-                pass
+        ret = super().to_internal_value(data_to_use)
         
         # ✅ إضافة owners بعد التحقق (كـ list من dictionaries)
         ret["owners"] = owners_parsed if isinstance(owners_parsed, list) else []
@@ -1757,91 +1806,35 @@ class ContractSerializer(serializers.ModelSerializer):
         
         ret["attachments"] = attachments_parsed if isinstance(attachments_parsed, list) else []
         
-        # ✅ معالجة extensions
-        extensions_raw = None
-        if hasattr(self, 'initial_data') and self.initial_data:
-            extensions_raw = self.initial_data.get("extensions")
-        if extensions_raw is None and hasattr(data, 'get'):
-            extensions_raw = data.get("extensions")
-        
-        extensions_parsed = []
-        if extensions_raw is not None:
-            if isinstance(extensions_raw, str):
-                try:
-                    parsed = json.loads(extensions_raw)
-                    if isinstance(parsed, list):
-                        extensions_parsed = parsed
-                except (json.JSONDecodeError, ValueError, TypeError):
-                    extensions_parsed = []
-            elif isinstance(extensions_raw, list):
-                extensions_parsed = extensions_raw
-        
-        # ✅ استخراج ملفات التمديدات من FormData (مثل attachments)
-        files_data = {}
-        req = self.context.get("request")
-        if req:
-            try:
-                files = None
-                if hasattr(req, '_request') and hasattr(req._request, 'FILES'):
-                    files = req._request.FILES
-                elif hasattr(req, 'FILES'):
-                    files = req.FILES
-                
-                if files:
-                    import re
-                    pattern = re.compile(r"^extensions\[(\d+)\]\[file\]$")
-                    for key in files.keys():
-                        m = pattern.match(str(key))
-                        if m:
-                            idx = int(m.group(1))
-                            files_data[idx] = files.get(key)
-            except Exception as e:
-                logger.warning(f"Error extracting extension files: {e}")
-        
-        # ✅ تنظيف extensions - التأكد من أن كل extension يحتوي على الحقول المطلوبة
-        cleaned_extensions = []
-        for idx, ext in enumerate(extensions_parsed):
-            if isinstance(ext, dict):
-                cleaned_ext = {
-                    "reason": str(ext.get("reason", "")).strip(),
-                    "days": int(ext.get("days", 0)) if ext.get("days") is not None else 0,
-                    "months": int(ext.get("months", 0)) if ext.get("months") is not None else 0,
-                    "extension_date": str(ext.get("extension_date", "")).strip() if ext.get("extension_date") else None,
-                    "approval_number": str(ext.get("approval_number", "")).strip() if ext.get("approval_number") else None,
-                    "file_url": str(ext.get("file_url", "")).strip() if ext.get("file_url") else None,
-                    "file_name": str(ext.get("file_name", "")).strip() if ext.get("file_name") else None,
-                }
-                # ✅ إضافة ملف إذا كان موجوداً في FormData
-                if idx in files_data:
-                    cleaned_ext["_file"] = files_data[idx]
-                # ✅ إضافة فقط إذا كان له بيانات (سبب أو مدة أو تاريخ أو رقم اعتماد أو ملف)
-                hasData = (
-                    cleaned_ext["reason"] or 
-                    cleaned_ext["days"] > 0 or 
-                    cleaned_ext["months"] > 0 or 
-                    cleaned_ext["extension_date"] or 
-                    cleaned_ext["approval_number"] or 
-                    cleaned_ext.get("_file")
-                )
-                if hasData:
-                    cleaned_extensions.append(cleaned_ext)
-        
-        ret["extensions"] = cleaned_extensions
+        # ✅ تم نقل extensions إلى StartOrder - لا نعالجها هنا
         
         return ret
 
     def validate(self, attrs):
-        total = attrs.get("total_project_value") or getattr(self.instance, "total_project_value", None)
-        bank  = attrs.get("total_bank_value")  or getattr(self.instance, "total_bank_value", 0)
-        if total is not None and float(total) <= 0:
-            raise serializers.ValidationError({"total_project_value": "يجب أن يكون أكبر من صفر."})
-        if bank is not None and float(bank) < 0:
-            raise serializers.ValidationError({"total_bank_value": "لا يمكن أن يكون سالبًا."})
+        # ✅ التحقق فقط من القيم الجديدة المرسلة في attrs، وليس من instance
+        # هذا يسمح بالتحديثات الجزئية (مثل تحديث contract_classification فقط)
+        total = attrs.get("total_project_value")
+        bank = attrs.get("total_bank_value")
+        
+        # ✅ التحقق من total_project_value فقط إذا كان موجوداً في attrs
+        if total is not None:
+            try:
+                total_float = float(total)
+                if total_float <= 0:
+                    raise serializers.ValidationError({"total_project_value": "يجب أن يكون أكبر من صفر."})
+            except (ValueError, TypeError):
+                pass  # إذا كانت القيمة غير صالحة، سيتم رفع خطأ من serializer field
+        
+        # ✅ التحقق من total_bank_value فقط إذا كان موجوداً في attrs
+        if bank is not None:
+            try:
+                bank_float = float(bank)
+                if bank_float < 0:
+                    raise serializers.ValidationError({"total_bank_value": "لا يمكن أن يكون سالبًا."})
+            except (ValueError, TypeError):
+                pass  # إذا كانت القيمة غير صالحة، سيتم رفع خطأ من serializer field
+        
         return attrs
-
-    def get_start_order_exists(self, obj):
-        """حساب start_order_exists بناءً على وجود الملف أو التاريخ"""
-        return bool(obj.start_order_file or obj.start_order_date)
 
     def to_representation(self, instance):
         """ملء بيانات المقاول من TenantSettings عند القراءة دائماً (Single Source of Truth)"""
@@ -1913,7 +1906,7 @@ class ContractSerializer(serializers.ModelSerializer):
         # ✅ حفظ owners في قاعدة البيانات (قابلة للتحرير)
         owners_data = validated_data.pop("owners", [])
         attachments_data = validated_data.pop("attachments", [])
-        extensions_data = validated_data.pop("extensions", [])
+        # ✅ تم نقل extensions إلى StartOrder - لا نحفظها هنا
         
         try:
             obj = Contract.objects.create(**validated_data)
@@ -1922,35 +1915,6 @@ class ContractSerializer(serializers.ModelSerializer):
             if owners_data and isinstance(owners_data, list):
                 obj.owners = owners_data
                 obj.save(update_fields=["owners"])
-            
-            # ✅ حفظ extensions في قاعدة البيانات
-            if extensions_data and isinstance(extensions_data, list):
-                saved_extensions = []
-                for ext in extensions_data:
-                    ext_dict = {
-                        "reason": ext.get("reason", ""),
-                        "days": ext.get("days", 0),
-                        "months": ext.get("months", 0),
-                        "extension_date": ext.get("extension_date"),
-                        "approval_number": ext.get("approval_number"),
-                        "file_url": None,
-                        "file_name": None,
-                    }
-                    # ✅ إذا كان هناك ملف جديد
-                    if "_file" in ext and ext["_file"]:
-                        from django.core.files.storage import default_storage
-                        file_obj = ext["_file"]
-                        file_path = default_storage.save(f"contracts/extensions/{obj.id}/{file_obj.name}", file_obj)
-                        # ✅ توحيد المسار باستخدام normalize_file_url
-                        ext_dict["file_url"] = normalize_file_url(default_storage.url(file_path))
-                        ext_dict["file_name"] = file_obj.name
-                    # ✅ إذا كان هناك file_url موجود (من extension قديم) - توحيده
-                    elif ext.get("file_url"):
-                        ext_dict["file_url"] = normalize_file_url(ext.get("file_url"))
-                        ext_dict["file_name"] = ext.get("file_name")
-                    saved_extensions.append(ext_dict)
-                obj.extensions = saved_extensions
-                obj.save(update_fields=["extensions"])
             
             # ✅ حفظ المرفقات
             if attachments_data and isinstance(attachments_data, list):
@@ -2049,7 +2013,7 @@ class ContractSerializer(serializers.ModelSerializer):
         # ✅ تحديث owners في قاعدة البيانات (قابلة للتحرير)
         owners_data = validated_data.pop("owners", None)
         attachments_data = validated_data.pop("attachments", None)
-        extensions_data = validated_data.pop("extensions", None)
+        # ✅ تم نقل extensions إلى StartOrder - لا نحدثها هنا
         
         try:
             updated = super().update(instance, validated_data)
@@ -2058,46 +2022,6 @@ class ContractSerializer(serializers.ModelSerializer):
             if owners_data is not None and isinstance(owners_data, list):
                 updated.owners = owners_data
                 updated.save(update_fields=["owners"])
-            
-            # ✅ تحديث extensions في قاعدة البيانات
-            if extensions_data is not None and isinstance(extensions_data, list):
-                saved_extensions = []
-                for ext in extensions_data:
-                    ext_dict = {
-                        "reason": ext.get("reason", ""),
-                        "days": ext.get("days", 0),
-                        "months": ext.get("months", 0),
-                        "extension_date": ext.get("extension_date"),
-                        "approval_number": ext.get("approval_number"),
-                        "file_url": None,
-                        "file_name": None,
-                    }
-                    # ✅ إذا كان هناك ملف جديد
-                    if "_file" in ext and ext["_file"]:
-                        from django.core.files.storage import default_storage
-                        file_obj = ext["_file"]
-                        # ✅ حذف الملف القديم إذا كان موجوداً
-                        old_ext = None
-                        if updated.extensions and isinstance(updated.extensions, list) and len(updated.extensions) > len(saved_extensions):
-                            old_ext = updated.extensions[len(saved_extensions)]
-                            if old_ext and old_ext.get("file_url"):
-                                try:
-                                    old_path = old_ext["file_url"].replace(default_storage.url(""), "")
-                                    if default_storage.exists(old_path):
-                                        default_storage.delete(old_path)
-                                except:
-                                    pass
-                        file_path = default_storage.save(f"contracts/extensions/{updated.id}/{file_obj.name}", file_obj)
-                        # ✅ توحيد المسار باستخدام normalize_file_url
-                        ext_dict["file_url"] = normalize_file_url(default_storage.url(file_path))
-                        ext_dict["file_name"] = file_obj.name
-                    # ✅ إذا كان هناك file_url موجود (من extension قديم) - توحيده
-                    elif ext.get("file_url"):
-                        ext_dict["file_url"] = normalize_file_url(ext.get("file_url"))
-                        ext_dict["file_name"] = ext.get("file_name")
-                    saved_extensions.append(ext_dict)
-                updated.extensions = saved_extensions
-                updated.save(update_fields=["extensions"])
             
             # ✅ تحديث المرفقات إذا كانت موجودة
             if attachments_data is not None and isinstance(attachments_data, list):
@@ -2213,6 +2137,259 @@ class AwardingSerializer(serializers.ModelSerializer):
 
 
 # =========================
+# StartOrder
+# =========================
+class StartOrderSerializer(serializers.ModelSerializer):
+    # ✅ extensions تُرسل كـ JSON string أو list
+    extensions = serializers.JSONField(required=False, allow_null=True, default=list)
+    
+    class Meta:
+        model = StartOrder
+        fields = [
+            "id", "project",
+            "start_order_date",
+            "start_order_notes",
+            "start_order_file",
+            "extensions",
+            "project_end_date",
+            "created_at", "updated_at",
+        ]
+        read_only_fields = ["project", "project_end_date", "created_at", "updated_at"]
+    
+    def _calculate_project_end_date(self, start_order_date, extensions, project):
+        """حساب تاريخ نهاية المشروع بناءً على start_order_date + project_duration_months + extensions"""
+        if not start_order_date:
+            return None
+        
+        # ✅ التحقق من وجود project
+        if not project:
+            logger.warning("_calculate_project_end_date: project is None")
+            return None
+        
+        try:
+            # ✅ استخدام relativedelta إذا كان متوفراً، وإلا حساب يدوي للأشهر
+            try:
+                from dateutil.relativedelta import relativedelta
+                use_relativedelta = True
+            except ImportError:
+                use_relativedelta = False
+            
+            # ✅ الحصول على project_duration_months من Contract
+            project_duration_months = 0
+            try:
+                if hasattr(project, 'contract'):
+                    contract = project.contract
+                    if contract and hasattr(contract, 'project_duration_months') and contract.project_duration_months:
+                        project_duration_months = contract.project_duration_months
+            except Exception as e:
+                logger.warning(f"_calculate_project_end_date: Error getting contract: {e}")
+                pass
+            
+            # ✅ حساب التاريخ النهائي: start_order_date + project_duration_months
+            end_date = start_order_date
+            if project_duration_months > 0:
+                if use_relativedelta:
+                    end_date = end_date + relativedelta(months=project_duration_months)
+                else:
+                    # ✅ حساب يدوي للأشهر (تقريبي - 30 يوم في الشهر)
+                    end_date = end_date + timedelta(days=project_duration_months * 30)
+            
+            # ✅ إضافة التمديدات (أيام وأشهر)
+            if extensions and isinstance(extensions, list):
+                for ext in extensions:
+                    if isinstance(ext, dict):
+                        months = int(ext.get("months", 0) or 0)
+                        days = int(ext.get("days", 0) or 0)
+                        if months > 0:
+                            if use_relativedelta:
+                                end_date = end_date + relativedelta(months=months)
+                            else:
+                                # ✅ حساب يدوي للأشهر
+                                end_date = end_date + timedelta(days=months * 30)
+                        if days > 0:
+                            end_date = end_date + timedelta(days=days)
+            
+            return end_date
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error calculating project_end_date: {e}", exc_info=True)
+            return None
+    
+    def to_internal_value(self, data):
+        """معالجة extensions وملفات التمديدات من FormData"""
+        ret = super().to_internal_value(data)
+        
+        # ✅ معالجة extensions من FormData (نفس منطق ContractSerializer)
+        extensions_str = None
+        if isinstance(data, dict):
+            extensions_str = data.get("extensions")
+        elif hasattr(data, "get"):
+            extensions_str = data.get("extensions")
+        
+        # ✅ تهيئة extensions_parsed بقيمة افتراضية
+        extensions_parsed = []
+        
+        if extensions_str is None:
+            extensions_parsed = []
+        elif isinstance(extensions_str, str):
+            try:
+                extensions_parsed = json.loads(extensions_str) if extensions_str.strip() else []
+            except (json.JSONDecodeError, AttributeError):
+                extensions_parsed = []
+        elif isinstance(extensions_str, list):
+            extensions_parsed = extensions_str
+        else:
+            extensions_parsed = []
+        
+        # ✅ استخراج ملفات extensions من FormData
+        req = self.context.get("request")
+        files_data = None
+        if req:
+            try:
+                if hasattr(req, '_request') and hasattr(req._request, 'FILES'):
+                    files_data = req._request.FILES
+                elif hasattr(req, 'FILES'):
+                    files_data = req.FILES
+            except Exception:
+                pass
+        
+        # ✅ تنظيف extensions - التأكد من أن كل extension يحتوي على الحقول المطلوبة
+        cleaned_extensions = []
+        for idx, ext in enumerate(extensions_parsed):
+            if isinstance(ext, dict):
+                cleaned_ext = {
+                    "reason": str(ext.get("reason", "")).strip(),
+                    "days": int(ext.get("days", 0)) if ext.get("days") is not None else 0,
+                    "months": int(ext.get("months", 0)) if ext.get("months") is not None else 0,
+                    "extension_date": str(ext.get("extension_date", "")).strip() if ext.get("extension_date") else None,
+                    "approval_number": str(ext.get("approval_number", "")).strip() if ext.get("approval_number") else None,
+                    "file_url": str(ext.get("file_url", "")).strip() if ext.get("file_url") else None,
+                    "file_name": str(ext.get("file_name", "")).strip() if ext.get("file_name") else None,
+                }
+                # ✅ إضافة ملف إذا كان موجوداً في FormData
+                if files_data:
+                    file_key = f"extensions[{idx}][file]"
+                    if file_key in files_data:
+                        cleaned_ext["_file"] = files_data[file_key]
+                # ✅ إضافة فقط إذا كان له بيانات
+                hasData = (
+                    cleaned_ext["reason"] or 
+                    cleaned_ext["days"] > 0 or 
+                    cleaned_ext["months"] > 0 or 
+                    cleaned_ext["extension_date"] or 
+                    cleaned_ext["approval_number"] or 
+                    cleaned_ext.get("_file")
+                )
+                if hasData:
+                    cleaned_extensions.append(cleaned_ext)
+        
+        ret["extensions"] = cleaned_extensions
+        
+        return ret
+    
+    def create(self, validated_data):
+        """إنشاء StartOrder مع حساب project_end_date"""
+        extensions_data = validated_data.pop("extensions", [])
+        start_order_date = validated_data.get("start_order_date")
+        # ✅ project يتم تمريره من perform_create في ViewSet، لذلك نأخذه من validated_data
+        project = validated_data.get("project")
+        
+        # ✅ حساب project_end_date (project موجود لأن perform_create يمرره)
+        project_end_date = self._calculate_project_end_date(start_order_date, extensions_data, project)
+        validated_data["project_end_date"] = project_end_date
+        
+        # ✅ إنشاء StartOrder
+        obj = StartOrder.objects.create(**validated_data)
+        
+        # ✅ حفظ extensions مع الملفات
+        if extensions_data and isinstance(extensions_data, list):
+            saved_extensions = []
+            for ext in extensions_data:
+                ext_dict = {
+                    "reason": ext.get("reason", ""),
+                    "days": ext.get("days", 0),
+                    "months": ext.get("months", 0),
+                    "extension_date": ext.get("extension_date"),
+                    "approval_number": ext.get("approval_number"),
+                    "file_url": None,
+                    "file_name": None,
+                }
+                # ✅ إذا كان هناك ملف جديد
+                if "_file" in ext and ext["_file"]:
+                    from django.core.files.storage import default_storage
+                    file_obj = ext["_file"]
+                    file_path = default_storage.save(f"start_orders/extensions/{obj.id}/{file_obj.name}", file_obj)
+                    ext_dict["file_url"] = normalize_file_url(default_storage.url(file_path))
+                    ext_dict["file_name"] = file_obj.name
+                # ✅ إذا كان هناك file_url موجود
+                elif ext.get("file_url"):
+                    ext_dict["file_url"] = normalize_file_url(ext.get("file_url"))
+                    ext_dict["file_name"] = ext.get("file_name")
+                saved_extensions.append(ext_dict)
+            obj.extensions = saved_extensions
+            obj.save(update_fields=["extensions"])
+        
+        return obj
+    
+    def update(self, instance, validated_data):
+        """تحديث StartOrder مع إعادة حساب project_end_date"""
+        extensions_data = validated_data.pop("extensions", None)
+        start_order_date = validated_data.get("start_order_date", instance.start_order_date)
+        project = instance.project
+        
+        # ✅ إعادة حساب project_end_date إذا تغير start_order_date أو extensions
+        if "start_order_date" in validated_data or extensions_data is not None:
+            extensions_to_use = extensions_data if extensions_data is not None else (instance.extensions or [])
+            project_end_date = self._calculate_project_end_date(start_order_date, extensions_to_use, project)
+            validated_data["project_end_date"] = project_end_date
+        
+        # ✅ تحديث الحقول
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        
+        # ✅ تحديث extensions مع الملفات
+        if extensions_data is not None:
+            saved_extensions = []
+            for idx, ext in enumerate(extensions_data):
+                if isinstance(ext, dict):
+                    ext_dict = {
+                        "reason": ext.get("reason", ""),
+                        "days": ext.get("days", 0),
+                        "months": ext.get("months", 0),
+                        "extension_date": ext.get("extension_date"),
+                        "approval_number": ext.get("approval_number"),
+                        "file_url": ext.get("file_url") or None,
+                        "file_name": ext.get("file_name") or None,
+                    }
+                    # ✅ إذا كان هناك ملف جديد
+                    if "_file" in ext and ext["_file"]:
+                        from django.core.files.storage import default_storage
+                        file_obj = ext["_file"]
+                        file_path = default_storage.save(f"start_orders/extensions/{instance.id}/{file_obj.name}", file_obj)
+                        ext_dict["file_url"] = normalize_file_url(default_storage.url(file_path))
+                        ext_dict["file_name"] = file_obj.name
+                    # ✅ إذا كان هناك file_url موجود (وليس ملف جديد)
+                    elif ext.get("file_url") and not ext.get("file_name"):
+                        # احتفظ بالقيمة الحالية
+                        pass
+                    saved_extensions.append(ext_dict)
+            instance.extensions = saved_extensions
+            instance.save(update_fields=["extensions"])
+            # ✅ إعادة حساب project_end_date بعد تحديث extensions
+            project_end_date = self._calculate_project_end_date(
+                instance.start_order_date, 
+                instance.extensions or [], 
+                project
+            )
+            instance.project_end_date = project_end_date
+            instance.save(update_fields=["project_end_date"])
+        
+        return instance
+
+
+# =========================
 # Variation (Price Change Order)
 # =========================
 class VariationSerializer(serializers.ModelSerializer):
@@ -2308,34 +2485,6 @@ class VariationSerializer(serializers.ModelSerializer):
 # =========================
 # Invoice
 # =========================
-    def create(self, validated_data):
-        """Auto-generate invoice_number if not provided"""
-        # Convert empty string to None
-        if not validated_data.get('invoice_number'):
-            validated_data['invoice_number'] = None
-        
-        # Generate invoice number if still None
-        if validated_data.get('invoice_number') is None:
-            import datetime
-            project_id = validated_data.get('project').id if validated_data.get('project') else 'X'
-            timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-            # Add random suffix to ensure uniqueness
-            import random
-            random_suffix = random.randint(1000, 9999)
-            validated_data['invoice_number'] = f"INV-{project_id}-{timestamp}-{random_suffix}"
-        
-        return super().create(validated_data)
-    
-    def update(self, instance, validated_data):
-        """Handle invoice_number update"""
-        # Convert empty string to None
-        if 'invoice_number' in validated_data:
-            if validated_data['invoice_number'] == "":
-                validated_data['invoice_number'] = None
-        
-        return super().update(instance, validated_data)
-
-
 class ActualInvoiceSerializer(serializers.ModelSerializer):
     project_name = serializers.SerializerMethodField()
     payment_id = serializers.SerializerMethodField()
