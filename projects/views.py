@@ -1559,33 +1559,33 @@ def download_file(request, file_path):
                 status=status.HTTP_404_NOT_FOUND
             )
         
-            # ✅ تحديد content type
-            content_type, encoding = mimetypes.guess_type(str(full_path))
-            if not content_type:
-                # ✅ تحديد content type بناءً على الامتداد
-                ext = os.path.splitext(str(full_path))[1].lower()
-                if ext in ['.jpg', '.jpeg']:
-                    content_type = 'image/jpeg'
-                elif ext == '.png':
-                    content_type = 'image/png'
-                elif ext == '.gif':
-                    content_type = 'image/gif'
-                elif ext == '.svg':
-                    content_type = 'image/svg+xml'
-                elif ext == '.webp':
-                    content_type = 'image/webp'
-                elif ext == '.pdf':
-                    content_type = 'application/pdf'
-                else:
-                    content_type = 'application/octet-stream'
-            
-            # ✅ إرجاع الملف مع headers مناسبة
-            try:
-                file_handle = open(full_path, 'rb')
-                response = FileResponse(
-                    file_handle,
-                    content_type=content_type
-                )
+        # ✅ تحديد content type
+        content_type, encoding = mimetypes.guess_type(str(full_path))
+        if not content_type:
+            # ✅ تحديد content type بناءً على الامتداد
+            ext = os.path.splitext(str(full_path))[1].lower()
+            if ext in ['.jpg', '.jpeg']:
+                content_type = 'image/jpeg'
+            elif ext == '.png':
+                content_type = 'image/png'
+            elif ext == '.gif':
+                content_type = 'image/gif'
+            elif ext == '.svg':
+                content_type = 'image/svg+xml'
+            elif ext == '.webp':
+                content_type = 'image/webp'
+            elif ext == '.pdf':
+                content_type = 'application/pdf'
+            else:
+                content_type = 'application/octet-stream'
+        
+        # ✅ إرجاع الملف مع headers مناسبة
+        try:
+            file_handle = open(full_path, 'rb')
+            response = FileResponse(
+                file_handle,
+                content_type=content_type
+            )
             
             # ✅ إضافة Content-Disposition header
             filename = os.path.basename(str(full_path))
