@@ -1433,17 +1433,37 @@ def _recalculate_project_after_variation_removal(project, removed_net_with_vat):
 
 
 # ===============================
-# File Download Endpoint (Protected)
+# File Download Endpoint (Protected/Public)
 # ===============================
 @api_view(['GET', 'OPTIONS'])
-@permission_classes([IsAuthenticated])
 def download_file(request, file_path):
     """
-    Endpoint محمي لتحميل الملفات مع authentication
-    يستقبل مسار الملف النسبي (مثل: contracts/main/file.pdf)
-    ويرجع الملف مع authentication
-    يدعم المسارات القديمة والجديدة
+    Endpoint لتحميل الملفات
+    - الصور العامة (logos, backgrounds, avatars): AllowAny (لا تحتاج authentication)
+    - الملفات الحساسة (contracts, projects): IsAuthenticated (تحتاج authentication)
+    يستقبل مسار الملف النسبي (مثل: contracts/main/file.pdf أو tenants/logos/logo.png)
     """
+    # ✅ تحديد المسارات العامة التي لا تحتاج authentication
+    public_paths = [
+        'tenants/logos/',
+        'tenants/backgrounds/',
+        'users/avatars/',
+        'company_logos/',
+        'background_images/',
+        'avatars/',
+    ]
+    
+    # ✅ التحقق من نوع الملف
+    is_public_file = any(file_path.startswith(path) or path in file_path for path in public_paths)
+    
+    # ✅ تطبيق الصلاحيات حسب نوع الملف
+    if not is_public_file:
+        # ✅ الملفات الحساسة تحتاج authentication
+        if not request.user or not request.user.is_authenticated:
+            return Response(
+                {"detail": "Authentication credentials were not provided."},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
     import logging
     import urllib.parse
     import mimetypes
