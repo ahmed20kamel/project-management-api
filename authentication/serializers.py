@@ -67,13 +67,35 @@ class TenantSettingsSerializer(serializers.ModelSerializer):
         logger.info(f"Updating TenantSettings for tenant {instance.tenant.id}")
         logger.info(f"Validated data keys: {list(validated_data.keys())}")
         
+        # ✅ حفظ الملفات القديمة قبل التحديث (لحذفها لاحقاً إذا تم استبدالها)
+        old_logo = instance.company_logo
+        old_background = instance.background_image
+        
         # ✅ تحديث جميع الحقول (فقط الحقول الموجودة في validated_data)
         # لا نحدث الحقول المطلوبة إذا لم تكن في validated_data (partial update)
         for attr, value in validated_data.items():
             # ✅ تخطي الحقول الفارغة (None أو empty string) إلا إذا كانت ملفات
             if value is None or (isinstance(value, str) and value.strip() == '' and attr not in ['company_logo', 'background_image']):
                 continue
+            
+            # ✅ معالجة خاصة للملفات
+            if attr in ['company_logo', 'background_image']:
+                # ✅ إذا كان هناك ملف جديد، نحذف الملف القديم أولاً
+                if attr == 'company_logo' and old_logo and value:
+                    try:
+                        old_logo.delete(save=False)
+                        logger.info(f"Deleted old company logo: {old_logo}")
+                    except Exception as e:
+                        logger.warning(f"Could not delete old logo: {e}")
+                elif attr == 'background_image' and old_background and value:
+                    try:
+                        old_background.delete(save=False)
+                        logger.info(f"Deleted old background image: {old_background}")
+                    except Exception as e:
+                        logger.warning(f"Could not delete old background: {e}")
+            
             setattr(instance, attr, value)
+            logger.info(f"Set {attr} = {value if attr not in ['company_logo', 'background_image'] else 'FILE'}")
         
         # ✅ حفظ في قاعدة البيانات
         instance.save()
@@ -81,6 +103,7 @@ class TenantSettingsSerializer(serializers.ModelSerializer):
         # ✅ Logging بعد التحديث
         logger.info(f"TenantSettings updated successfully")
         logger.info(f"Company Logo after save: {instance.company_logo}")
+        logger.info(f"Background Image after save: {instance.background_image}")
         logger.info(f"Primary Color after save: {instance.primary_color}")
         logger.info(f"Secondary Color after save: {instance.secondary_color}")
         

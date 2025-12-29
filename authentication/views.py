@@ -367,17 +367,36 @@ class TenantSettingsViewSet(viewsets.ModelViewSet):
                 # ✅ منع تعديل الحقول المحمية (email, subscription info)
                 # معالجة FormData بشكل صحيح
                 from django.http import QueryDict
+                import logging
+                logger = logging.getLogger(__name__)
+                
                 if isinstance(request.data, QueryDict):
                     # QueryDict: نسخ البيانات مع الحفاظ على الملفات
                     data_dict = request.data.dict()
-                    # إضافة الملفات بشكل منفصل
+                    # ✅ إضافة الملفات بشكل منفصل (من request.FILES)
                     if 'company_logo' in request.FILES:
                         data_dict['company_logo'] = request.FILES['company_logo']
+                        logger.info(f"Company logo file received: {request.FILES['company_logo'].name}")
+                    elif 'company_logo' in data_dict and data_dict['company_logo'] == '':
+                        # ✅ إذا كان company_logo فارغاً، نزيله (لعدم حذف الملف الحالي)
+                        del data_dict['company_logo']
+                    
                     if 'background_image' in request.FILES:
                         data_dict['background_image'] = request.FILES['background_image']
+                        logger.info(f"Background image file received: {request.FILES['background_image'].name}")
+                    elif 'background_image' in data_dict and data_dict['background_image'] == '':
+                        # ✅ إذا كان background_image فارغاً، نزيله (لعدم حذف الملف الحالي)
+                        del data_dict['background_image']
                 else:
                     # dict عادي أو JSON
                     data_dict = dict(request.data) if hasattr(request.data, 'keys') else request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
+                    # ✅ إضافة الملفات من request.FILES إذا كانت موجودة
+                    if 'company_logo' in request.FILES:
+                        data_dict['company_logo'] = request.FILES['company_logo']
+                        logger.info(f"Company logo file received: {request.FILES['company_logo'].name}")
+                    if 'background_image' in request.FILES:
+                        data_dict['background_image'] = request.FILES['background_image']
+                        logger.info(f"Background image file received: {request.FILES['background_image'].name}")
                 
                 # حذف الحقول المحمية
                 protected_fields = ['company_email', 'max_users', 'max_projects', 
@@ -387,7 +406,18 @@ class TenantSettingsViewSet(viewsets.ModelViewSet):
                         del data_dict[field]
                 
                 # ✅ إزالة الحقول الفارغة (empty strings) لتجنب مشاكل التحقق
-                data_dict = {k: v for k, v in data_dict.items() if v not in [None, '', []]}
+                # لكن نحتفظ بالملفات حتى لو كانت فارغة (لأنها قد تكون في request.FILES)
+                cleaned_dict = {}
+                for k, v in data_dict.items():
+                    # ✅ الاحتفاظ بالملفات دائماً
+                    if k in ['company_logo', 'background_image']:
+                        cleaned_dict[k] = v
+                    # ✅ الاحتفاظ بالقيم غير الفارغة
+                    elif v not in [None, '', []]:
+                        cleaned_dict[k] = v
+                data_dict = cleaned_dict
+                
+                logger.info(f"Data dict keys after cleaning: {list(data_dict.keys())}")
                 
                 try:
                     settings = TenantSettings.objects.select_related('tenant').get(tenant=request.user.tenant)
@@ -409,12 +439,18 @@ class TenantSettingsViewSet(viewsets.ModelViewSet):
                     instance = serializer.save()
                     
                     # ✅ التأكد من حفظ البيانات في قاعدة البيانات
-                    import logging
-                    logger = logging.getLogger(__name__)
                     logger.info(f"TenantSettings updated for tenant {settings.tenant.id}")
+                    logger.info(f"Company logo after save: {instance.company_logo}")
+                    logger.info(f"Background image after save: {instance.background_image}")
                     
                     # ✅ إعادة تحميل من قاعدة البيانات للتأكد
                     instance.refresh_from_db()
+                    
+                    # ✅ التأكد من أن الملفات تم حفظها
+                    if 'company_logo' in data_dict:
+                        logger.info(f"Company logo file path after refresh: {instance.company_logo}")
+                    if 'background_image' in data_dict:
+                        logger.info(f"Background image file path after refresh: {instance.background_image}")
                     
                     log_audit(
                         user=request.user,
@@ -568,21 +604,29 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     Custom JWT Token Obtain View with rate limiting (if available)
     """
     def post(self, request, *args, **kwargs):
+        import logging
+        logger = logging.getLogger(__name__)
+        
         # ✅ Rate limiting يدوي (إذا لم يكن django_ratelimit متاحاً)
         if not RATELIMIT_AVAILABLE:
-            # ✅ تطبيق rate limiting بسيط باستخدام cache
-            ip = request.META.get('REMOTE_ADDR', request.META.get('HTTP_X_FORWARDED_FOR', 'unknown').split(',')[0].strip())
-            cache_key = f'login_rate_limit_{ip}'
-            attempts = cache.get(cache_key, 0)
-            
-            if attempts >= 10:  # 10 attempts per minute
-                return Response(
-                    {'error': 'Too many login attempts. Please try again later.'},
-                    status=status.HTTP_429_TOO_MANY_REQUESTS
-                )
-            
-            # زيادة العداد
-            cache.set(cache_key, attempts + 1, 60)  # 1 minute
+            try:
+                # ✅ تطبيق rate limiting بسيط باستخدام cache
+                ip = request.META.get('REMOTE_ADDR', request.META.get('HTTP_X_FORWARDED_FOR', 'unknown').split(',')[0].strip())
+                cache_key = f'login_rate_limit_{ip}'
+                attempts = cache.get(cache_key, 0)
+                
+                if attempts >= 10:  # 10 attempts per minute
+                    logger.warning(f"Rate limit exceeded for IP: {ip}")
+                    return Response(
+                        {'error': 'Too many login attempts. Please try again later.'},
+                        status=status.HTTP_429_TOO_MANY_REQUESTS
+                    )
+                
+                # زيادة العداد فقط عند محاولة تسجيل الدخول (ليس عند النجاح)
+                # سيتم مسح العداد عند نجاح تسجيل الدخول
+            except Exception as e:
+                logger.warning(f"Error in rate limiting: {e}")
+                # في حالة خطأ في rate limiting، نتابع تسجيل الدخول
         
         # ✅ المتابعة مع login العادي
         serializer = LoginSerializer(data=request.data)
@@ -590,8 +634,24 @@ class CustomTokenObtainPairView(TokenObtainPairView):
             email = serializer.validated_data['email']
             password = serializer.validated_data['password']
             
-            user = authenticate(request, email=email, password=password)
+            try:
+                user = authenticate(request, email=email, password=password)
+            except Exception as e:
+                logger.error(f"Error during authentication: {e}", exc_info=True)
+                return Response(
+                    {'error': 'حدث خطأ أثناء تسجيل الدخول. يرجى المحاولة مرة أخرى.'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            
             if user and user.is_active:
+                # ✅ مسح rate limit counter عند نجاح تسجيل الدخول
+                if not RATELIMIT_AVAILABLE:
+                    try:
+                        ip = request.META.get('REMOTE_ADDR', request.META.get('HTTP_X_FORWARDED_FOR', 'unknown').split(',')[0].strip())
+                        cache_key = f'login_rate_limit_{ip}'
+                        cache.delete(cache_key)
+                    except Exception:
+                        pass
                 refresh = RefreshToken.for_user(user)
                 
                 # تحديث last_login
@@ -670,10 +730,32 @@ class CustomTokenObtainPairView(TokenObtainPairView):
                 
                 return Response(response_data)
             else:
+                # ✅ زيادة rate limit counter عند فشل تسجيل الدخول
+                if not RATELIMIT_AVAILABLE:
+                    try:
+                        ip = request.META.get('REMOTE_ADDR', request.META.get('HTTP_X_FORWARDED_FOR', 'unknown').split(',')[0].strip())
+                        cache_key = f'login_rate_limit_{ip}'
+                        attempts = cache.get(cache_key, 0)
+                        cache.set(cache_key, attempts + 1, 60)  # 1 minute
+                    except Exception:
+                        pass
+                
+                logger.warning(f"Failed login attempt for email: {email}")
                 return Response(
                     {'error': 'Invalid credentials or inactive account'},
                     status=status.HTTP_401_UNAUTHORIZED
                 )
+        
+        # ✅ زيادة rate limit counter عند validation errors
+        if not RATELIMIT_AVAILABLE:
+            try:
+                ip = request.META.get('REMOTE_ADDR', request.META.get('HTTP_X_FORWARDED_FOR', 'unknown').split(',')[0].strip())
+                cache_key = f'login_rate_limit_{ip}'
+                attempts = cache.get(cache_key, 0)
+                cache.set(cache_key, attempts + 1, 60)  # 1 minute
+            except Exception:
+                pass
+        
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -710,60 +792,102 @@ class UserViewSet(viewsets.ModelViewSet):
     
     def perform_create(self, serializer):
         """ربط المستخدم الجديد بـ tenant المستخدم الحالي والتحقق من Limits"""
-        # التحقق من الصلاحيات: فقط Company Super Admin يمكنه إنشاء مستخدمين
-        if not self.request.user.is_superuser:
-            if not is_company_admin(self.request.user):
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        try:
+            # التحقق من الصلاحيات: فقط Company Super Admin يمكنه إنشاء مستخدمين
+            if not self.request.user.is_superuser:
+                if not is_company_admin(self.request.user):
+                    raise drf_serializers.ValidationError({
+                        'error': 'Only company super admin can create users'
+                    })
+            
+            tenant = None
+            if hasattr(self.request, 'tenant') and self.request.tenant:
+                tenant = self.request.tenant
+            elif hasattr(self.request.user, 'tenant') and self.request.user.tenant:
+                tenant = self.request.user.tenant
+            
+            # ✅ التحقق من وجود tenant قبل المتابعة
+            if not tenant and not self.request.user.is_superuser:
+                logger.error(f"User {self.request.user.id} attempted to create user without tenant")
                 raise drf_serializers.ValidationError({
-                    'error': 'Only company super admin can create users'
+                    'error': 'Cannot create user: tenant is required'
                 })
-        
-        tenant = None
-        if hasattr(self.request, 'tenant') and self.request.tenant:
-            tenant = self.request.tenant
-        elif hasattr(self.request.user, 'tenant') and self.request.user.tenant:
-            tenant = self.request.user.tenant
-        
-        # التحقق من Limits (فقط للمستخدمين التابعين لشركة)
-        if tenant and not self.request.user.is_superuser:
-            try:
-                settings = tenant.settings
-                # حساب عدد المستخدمين الحاليين
-                current_users_count = User.objects.filter(tenant=tenant, is_active=True).count()
-                
-                # التحقق من الحد الأقصى
-                if current_users_count >= settings.max_users:
-                    raise drf_serializers.ValidationError({
-                        'error': f'تم الوصول للحد الأقصى لعدد المستخدمين ({settings.max_users}). يرجى التواصل مع مدير النظام لزيادة الحد.'
-                    })
-                
-                # التحقق من حالة الاشتراك
-                if settings.subscription_status in ['suspended', 'expired']:
-                    raise drf_serializers.ValidationError({
-                        'error': f'لا يمكن إضافة مستخدمين. حالة الاشتراك: {settings.get_subscription_status_display()}'
-                    })
-            except TenantSettings.DoesNotExist:
-                pass  # إذا لم تكن هناك إعدادات، نسمح بإنشاء المستخدم
-        
-        # تحديد حالة onboarding_completed
-        # Onboarding مخصص فقط لـ Company Super Admin في أول تسجيل دخول
-        # جميع المستخدمين الآخرين (Manager, Staff User) يجب أن يكون onboarding_completed = True
-        role_id = serializer.validated_data.get('role_id') or serializer.validated_data.get('role')
-        if role_id:
-            from .models import Role
-            try:
-                role = Role.objects.get(pk=role_id)
-                # فقط Company Super Admin يحتاج Onboarding
-                if role.name == 'company_super_admin':
-                    # إذا كان المستخدم الجديد هو Company Super Admin، نترك onboarding_completed كما هو (False افتراضياً)
-                    # لكن يجب التأكد من أن الشركة لم تكمل Onboarding بعد
-                    pass
-                else:
-                    # Manager و Staff User لا يحتاجون Onboarding
-                    serializer.validated_data['onboarding_completed'] = True
-            except Role.DoesNotExist:
-                pass
-        
-        serializer.save(tenant=tenant)
+            
+            # التحقق من Limits (فقط للمستخدمين التابعين لشركة)
+            if tenant and not self.request.user.is_superuser:
+                try:
+                    settings = tenant.settings
+                    # حساب عدد المستخدمين الحاليين
+                    current_users_count = User.objects.filter(tenant=tenant, is_active=True).count()
+                    
+                    # التحقق من الحد الأقصى
+                    if current_users_count >= settings.max_users:
+                        raise drf_serializers.ValidationError({
+                            'error': f'تم الوصول للحد الأقصى لعدد المستخدمين ({settings.max_users}). يرجى التواصل مع مدير النظام لزيادة الحد.'
+                        })
+                    
+                    # التحقق من حالة الاشتراك
+                    if settings.subscription_status in ['suspended', 'expired']:
+                        raise drf_serializers.ValidationError({
+                            'error': f'لا يمكن إضافة مستخدمين. حالة الاشتراك: {settings.get_subscription_status_display()}'
+                        })
+                except TenantSettings.DoesNotExist:
+                    logger.warning(f"TenantSettings not found for tenant {tenant.id}, allowing user creation")
+                    pass  # إذا لم تكن هناك إعدادات، نسمح بإنشاء المستخدم
+            
+            # تحديد حالة onboarding_completed
+            # Onboarding مخصص فقط لـ Company Super Admin في أول تسجيل دخول
+            # جميع المستخدمين الآخرين (Manager, Staff User) يجب أن يكون onboarding_completed = True
+            role_id = serializer.validated_data.get('role_id')
+            role_obj = serializer.validated_data.get('role')
+            
+            # ✅ معالجة role_id أو role object
+            if role_id:
+                from .models import Role
+                try:
+                    # إذا كان role_id هو integer، نحصل على Role object
+                    if isinstance(role_id, int):
+                        role = Role.objects.get(pk=role_id)
+                    elif hasattr(role_id, 'pk'):
+                        role = role_id
+                    else:
+                        role = None
+                    
+                    if role:
+                        # فقط Company Super Admin يحتاج Onboarding
+                        if role.name == 'company_super_admin':
+                            # إذا كان المستخدم الجديد هو Company Super Admin، نترك onboarding_completed كما هو (False افتراضياً)
+                            pass
+                        else:
+                            # Manager و Staff User لا يحتاجون Onboarding
+                            serializer.validated_data['onboarding_completed'] = True
+                except Role.DoesNotExist:
+                    logger.warning(f"Role with id {role_id} not found")
+                except Exception as e:
+                    logger.error(f"Error processing role: {e}", exc_info=True)
+            elif role_obj:
+                # إذا كان role object موجوداً مباشرة
+                try:
+                    if hasattr(role_obj, 'name') and role_obj.name != 'company_super_admin':
+                        serializer.validated_data['onboarding_completed'] = True
+                except Exception as e:
+                    logger.error(f"Error processing role object: {e}", exc_info=True)
+            
+            # ✅ حفظ المستخدم مع tenant
+            serializer.save(tenant=tenant)
+            logger.info(f"User created successfully: {serializer.instance.id} for tenant {tenant.id if tenant else 'None'}")
+            
+        except drf_serializers.ValidationError:
+            # إعادة رفع ValidationError كما هي
+            raise
+        except Exception as e:
+            logger.error(f"Error in perform_create: {e}", exc_info=True)
+            raise drf_serializers.ValidationError({
+                'error': f'حدث خطأ أثناء إنشاء المستخدم: {str(e)}'
+            })
     
     def perform_update(self, serializer):
         """التحقق من الصلاحيات قبل التحديث"""

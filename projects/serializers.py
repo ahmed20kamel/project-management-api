@@ -530,9 +530,16 @@ class ProjectSerializer(serializers.ModelSerializer):
                 return obj.name
             
             # ✅ إذا لم يكن هناك اسم محفوظ، نحاول حسابه من الملاك
+            # ✅ استخدام prefetched data لتجنب queries إضافية
+            sp = None
             try:
-                sp = obj.siteplan
-            except SitePlan.DoesNotExist:
+                # ✅ محاولة الوصول إلى siteplan من prefetched data
+                if hasattr(obj, '_prefetched_objects_cache') and 'siteplan' in obj._prefetched_objects_cache:
+                    sp = obj._prefetched_objects_cache['siteplan']
+                elif hasattr(obj, 'siteplan'):
+                    # ✅ إذا كان siteplan محملاً بالفعل (select_related)
+                    sp = obj.siteplan
+            except (SitePlan.DoesNotExist, AttributeError):
                 sp = None
             except Exception as e:
                 logger.warning(f"Error accessing siteplan for project {obj.id}: {e}")
@@ -542,19 +549,33 @@ class ProjectSerializer(serializers.ModelSerializer):
             owners_count = 0
             if sp:
                 try:
-                    qs = sp.owners.all()
-                    owners_count = qs.count()
+                    # ✅ استخدام prefetched owners إذا كانت متاحة
+                    if hasattr(sp, '_prefetched_objects_cache') and 'owners' in sp._prefetched_objects_cache:
+                        owners_list = sp._prefetched_objects_cache['owners']
+                        owners_count = len(owners_list)
+                    elif hasattr(sp, 'owners'):
+                        # ✅ إذا كان owners محملاً بالفعل (prefetch_related)
+                        owners_list = list(sp.owners.all())
+                        owners_count = len(owners_list)
+                    else:
+                        # ✅ Fallback: query مباشر (يجب ألا يحدث إذا كان prefetch_related يعمل)
+                        owners_list = list(sp.owners.all())
+                        owners_count = len(owners_list)
                     
                     # ✅ البحث عن المالك المفوض أولاً
-                    authorized_owner = qs.filter(is_authorized=True).first()
+                    authorized_owner = None
+                    for o in owners_list:
+                        if getattr(o, 'is_authorized', False):
+                            authorized_owner = o
+                            break
                     
                     if authorized_owner:
                         ar = (getattr(authorized_owner, 'owner_name_ar', None) or "").strip()
                         en = (getattr(authorized_owner, 'owner_name_en', None) or "").strip()
                         main_name = ar or en
                     else:
-                        # ✅ إذا لم يكن هناك مالك مفوض محدد، نستخدم الأول (للتوافق مع البيانات القديمة)
-                        for o in qs.order_by("id"):
+                        # ✅ إذا لم يكن هناك مالك مفوض محدد، نستخدم الأول
+                        for o in owners_list:
                             ar = (getattr(o, 'owner_name_ar', None) or "").strip()
                             en = (getattr(o, 'owner_name_en', None) or "").strip()
                             if ar or en:
@@ -1612,55 +1633,36 @@ class ContractSerializer(serializers.ModelSerializer):
     
     def _get_attachment_filename(self, attachment_type, attachment_index, original_filename, existing_attachments=None):
         """
-        إنشاء اسم ملف ثابت للمرفقات الديناميكية مع الترقيم
-        ✅ الرقم يظهر فقط إذا كان هناك أكثر من ملف من نفس النوع
+        إنشاء اسم ملف موحد للمرفقات الديناميكية
+        ✅ الصيغة: الاسم_العربي_English_Name.extension (بدون أرقام عشوائية)
         
         Args:
             attachment_type: نوع المرفق (appendix, explanation, etc.)
-            attachment_index: الفهرس في المصفوفة
+            attachment_index: الفهرس في المصفوفة (غير مستخدم الآن - للتوافق)
             original_filename: اسم الملف الأصلي (للاستخراج الامتداد)
-            existing_attachments: قائمة المرفقات الموجودة (لحساب الرقم الصحيح)
+            existing_attachments: قائمة المرفقات الموجودة (غير مستخدم الآن - للتوافق)
         
         Returns:
-            str: اسم ملف ثابت مع الامتداد (مع رقم فقط إذا كان هناك أكثر من ملف)
+            str: اسم ملف موحد بصيغة الاسم_العربي_English_Name.extension
         """
         import os
         name, ext = os.path.splitext(original_filename)
         ext = ext or '.pdf'
         
-        # حساب عدد الملفات من نفس النوع في القائمة الكاملة
-        total_count = 0
-        if existing_attachments:
-            # حساب عدد الملفات من نفس النوع في القائمة الكاملة (بما في ذلك الملف الحالي)
-            total_count = sum(1 for att in existing_attachments 
-                            if att.get('type') == attachment_type)
-        
-        # ✅ إضافة الرقم فقط إذا كان هناك أكثر من ملف من نفس النوع
-        if total_count > 1:
-            # حساب رقم الملف الحالي
-            if existing_attachments and attachment_index is not None:
-                # حساب عدد الملفات من نفس النوع قبل هذا الملف
-                count = sum(1 for i, att in enumerate(existing_attachments) 
-                           if i < attachment_index and att.get('type') == attachment_type)
-                number = count + 1  # الرقم يبدأ من 1
-            elif attachment_index is not None:
-                number = attachment_index + 1
-            else:
-                number = 1
-            
-            number_str = f"_{number:02d}"  # تنسيق الرقم كـ "_01", "_02", إلخ
-        else:
-            number_str = ""  # بدون رقم إذا كان الملف الوحيد
-        
+        # ✅ mapping للأسماء الموحدة (الاسم العربي _ الاسم الإنجليزي)
+        # ✅ بدون أرقام عشوائية - الاسم ثابت وواضح
         filename_mapping = {
-            "appendix": f"ملحق_عقد_Contract_Addendum{number_str}",
-            "explanation": f"توضيحات_تعاقدية_Contract_Clarifications{number_str}",
+            "appendix": "ملحق_عقد_Contract_Addendum",
+            "explanation": "توضيحات_تعاقدية_Contract_Clarifications",
             "bank_contract": "عقد_البنك_Bank_Contract",
             "price_offer": "عرض_السعر_Price_Offer",
             "agreement": "ملحق_اتفاق_موقع_Site_Agreement",
         }
         
-        clean_name = filename_mapping.get(attachment_type, f"مرفق_تعاقدي_Contract_Attachment{number_str}")
+        # ✅ الحصول على الاسم الموحد من mapping
+        clean_name = filename_mapping.get(attachment_type, "مرفق_تعاقدي_Contract_Attachment")
+        
+        # ✅ إرجاع الاسم الموحد مع الامتداد (بدون أرقام)
         return f"{clean_name}{ext}"
 
     class Meta:
@@ -1940,7 +1942,60 @@ class ContractSerializer(serializers.ModelSerializer):
             except TenantSettings.DoesNotExist:
                 pass  # إذا لم تكن هناك إعدادات، نكمل بدون ملء البيانات
         
+        # ✅ تنظيف أسماء الملفات في attachments لإزالة الأرقام العشوائية
+        if 'attachments' in representation and isinstance(representation['attachments'], list):
+            cleaned_attachments = []
+            for att in representation['attachments']:
+                if isinstance(att, dict):
+                    cleaned_att = att.copy()
+                    # ✅ تنظيف file_name إذا كان موجوداً
+                    if 'file_name' in cleaned_att and cleaned_att['file_name']:
+                        file_name = cleaned_att['file_name']
+                        # ✅ استخراج نوع المرفق من file_name أو type
+                        attachment_type = cleaned_att.get('type', 'appendix')
+                        # ✅ إنشاء اسم ملف موحد بدون أرقام عشوائية
+                        cleaned_file_name = self._get_standard_attachment_filename(attachment_type, file_name)
+                        cleaned_att['file_name'] = cleaned_file_name
+                    cleaned_attachments.append(cleaned_att)
+                else:
+                    cleaned_attachments.append(att)
+            representation['attachments'] = cleaned_attachments
+        
         return representation
+    
+    def _get_standard_attachment_filename(self, attachment_type, original_filename):
+        """
+        إنشاء اسم ملف موحد للمرفقات بدون أرقام عشوائية
+        الصيغة: الاسم_العربي_English_Name.extension
+        
+        Args:
+            attachment_type: نوع المرفق (appendix, explanation, etc.)
+            original_filename: اسم الملف الأصلي (للاستخراج الامتداد)
+        
+        Returns:
+            str: اسم ملف موحد بصيغة الاسم_العربي_English_Name.extension
+        """
+        import os
+        import re
+        
+        # استخراج الامتداد
+        name, ext = os.path.splitext(original_filename)
+        ext = ext or '.pdf'
+        
+        # ✅ mapping للأسماء الموحدة (الاسم العربي _ الاسم الإنجليزي)
+        filename_mapping = {
+            "appendix": "ملحق_عقد_Contract_Addendum",
+            "explanation": "توضيحات_تعاقدية_Contract_Clarifications",
+            "bank_contract": "عقد_البنك_Bank_Contract",
+            "price_offer": "عرض_السعر_Price_Offer",
+            "agreement": "ملحق_اتفاق_موقع_Site_Agreement",
+        }
+        
+        # ✅ الحصول على الاسم الموحد من mapping
+        standard_name = filename_mapping.get(attachment_type, "مرفق_تعاقدي_Contract_Attachment")
+        
+        # ✅ إرجاع الاسم الموحد مع الامتداد
+        return f"{standard_name}{ext}"
 
     def _fill_snapshot(self, contract: Contract):
         try:

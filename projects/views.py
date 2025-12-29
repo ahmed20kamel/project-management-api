@@ -97,15 +97,44 @@ class ProjectViewSet(viewsets.ModelViewSet):
                         logger = logging.getLogger(__name__)
                         logger.warning(f"Error in select_related for include: {e}")
             
-            # ✅ prefetch_related للعلاقات العكسية (آمنة حتى لو كانت فارغة)
+            # ✅ select_related للـ User fields (لتجنب N+1 queries)
+            # هذه الحقول موجودة دائماً في serializer، لذلك نحملها دائماً
             try:
-                queryset = queryset.prefetch_related(
-                    'payments',  # Reverse ForeignKey
-                    'variations',  # Reverse ForeignKey
-                    'actual_invoices',  # Reverse ForeignKey - اسم صحيح من النموذج
-                    'consultants',  # Reverse ForeignKey - الاسم الصحيح من ProjectConsultant model
-                    'consultants__consultant',  # Nested prefetch
+                queryset = queryset.select_related(
+                    'delete_requested_by',
+                    'delete_approved_by',
+                    'last_approved_by',
+                    'final_approved_by',
+                    'current_stage',  # WorkflowStage
                 )
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Error in select_related for User fields: {e}")
+            
+            # ✅ prefetch_related للعلاقات العكسية (آمنة حتى لو كانت فارغة)
+            # ✅ إضافة prefetch لـ siteplan__owners لتجنب N+1 في get_display_name
+            from django.db.models import Prefetch
+            
+            prefetch_fields = [
+                'payments',  # Reverse ForeignKey
+                'variations',  # Reverse ForeignKey
+                'actual_invoices',  # Reverse ForeignKey
+                'consultants',  # Reverse ForeignKey
+                'consultants__consultant',  # Nested prefetch
+            ]
+            
+            # ✅ إضافة prefetch لـ siteplan__owners (مطلوب دائماً لـ get_display_name)
+            # ✅ استخدام Prefetch object لتحسين الأداء
+            prefetch_fields.append(
+                Prefetch(
+                    'siteplan__owners',
+                    queryset=SitePlanOwner.objects.order_by('id')
+                )
+            )
+            
+            try:
+                queryset = queryset.prefetch_related(*prefetch_fields)
             except Exception as e:
                 import logging
                 logger = logging.getLogger(__name__)
@@ -161,11 +190,32 @@ class ProjectViewSet(viewsets.ModelViewSet):
             return Project.objects.none()
     
     def list(self, request, *args, **kwargs):
-        """معالجة آمنة لقراءة قائمة المشاريع مع التعامل مع الأخطاء"""
+        """معالجة آمنة لقراءة قائمة المشاريع مع التعامل مع الأخطاء والـ caching"""
         try:
             # ✅ تسجيل معلومات للتشخيص
             import logging
             logger = logging.getLogger(__name__)
+            
+            # ✅ محاولة استخدام cache إذا كان متاحاً
+            cache_key = None
+            try:
+                from django.conf import settings
+                if hasattr(settings, 'USE_REDIS') and settings.USE_REDIS:
+                    # بناء cache key بناءً على query parameters و user
+                    user_tenant = getattr(request.user, 'tenant', None)
+                    tenant_id = user_tenant.id if user_tenant else 'none'
+                    approval_status = request.query_params.get('approval_status', 'all')
+                    exclude_final = request.query_params.get('exclude_final_approved', 'false')
+                    include_param = request.query_params.get('include', '')
+                    cache_key = f'projects_list_{tenant_id}_{approval_status}_{exclude_final}_{include_param}'
+                    
+                    # محاولة جلب من cache
+                    cached_data = cache.get(cache_key)
+                    if cached_data is not None:
+                        logger.info(f"✅ Returning cached projects list (key: {cache_key})")
+                        return Response(cached_data, status=status.HTTP_200_OK)
+            except Exception as e:
+                logger.warning(f"Cache error (continuing without cache): {e}")
             
             # التحقق من queryset قبل التسلسل
             queryset = self.get_queryset()
@@ -176,6 +226,17 @@ class ProjectViewSet(viewsets.ModelViewSet):
             
             # ✅ محاولة التسلسل
             response = super().list(request, *args, **kwargs)
+            
+            # ✅ حفظ في cache إذا كان متاحاً
+            if cache_key and hasattr(response, 'data'):
+                try:
+                    from django.conf import settings
+                    if hasattr(settings, 'USE_REDIS') and settings.USE_REDIS:
+                        # حفظ لمدة 5 دقائق
+                        cache.set(cache_key, response.data, 300)
+                        logger.info(f"✅ Cached projects list (key: {cache_key})")
+                except Exception:
+                    pass
             
             # ✅ تسجيل عدد المشاريع المُرجعة
             if hasattr(response, 'data'):
@@ -240,9 +301,57 @@ class ProjectViewSet(viewsets.ModelViewSet):
         # ملاحظة: تم إزالة منطق requires_approval لأن المشاريع تُنشأ في حالة draft
         # والمستخدم يرسلها للموافقة لاحقاً باستخدام action submit
         if tenant:
-            serializer.save(tenant=tenant)
+            instance = serializer.save(tenant=tenant)
         else:
-            serializer.save()
+            instance = serializer.save()
+        
+        # ✅ مسح cache بعد إنشاء مشروع جديد
+        self._clear_projects_cache(tenant)
+    
+    def perform_update(self, serializer):
+        """تحديث المشروع مع مسح cache"""
+        instance = serializer.save()
+        # ✅ مسح cache بعد تحديث المشروع
+        tenant = getattr(instance, 'tenant', None)
+        self._clear_projects_cache(tenant)
+        return instance
+    
+    def perform_destroy(self, instance):
+        """حذف المشروع مع مسح cache"""
+        tenant = getattr(instance, 'tenant', None)
+        super().perform_destroy(instance)
+        # ✅ مسح cache بعد حذف المشروع
+        self._clear_projects_cache(tenant)
+    
+    def _clear_projects_cache(self, tenant):
+        """مسح cache المشاريع لـ tenant معين"""
+        try:
+            from django.conf import settings
+            if hasattr(settings, 'USE_REDIS') and settings.USE_REDIS:
+                tenant_id = tenant.id if tenant else 'none'
+                # مسح جميع cache keys المتعلقة بهذا tenant
+                cache_pattern = f'projects_list_{tenant_id}_*'
+                # Django cache لا يدعم pattern deletion مباشرة، لذلك نستخدم طريقة أخرى
+                # نمسح cache keys الشائعة
+                common_keys = [
+                    f'projects_list_{tenant_id}_all_false_',
+                    f'projects_list_{tenant_id}_all_true_',
+                    f'projects_list_{tenant_id}_final_approved_false_',
+                    f'projects_list_{tenant_id}_approved_false_',
+                    f'projects_list_{tenant_id}_pending_false_',
+                ]
+                for key_pattern in common_keys:
+                    # محاولة حذف keys مختلفة
+                    for include in ['', 'siteplan', 'siteplan,license', 'siteplan,license,contract', 'siteplan,license,contract,awarding']:
+                        cache_key = key_pattern + include
+                        try:
+                            cache.delete(cache_key)
+                        except Exception:
+                            pass
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Error clearing projects cache: {e}")
     
     @action(detail=True, methods=['post'])
     def submit(self, request, pk=None):
@@ -1326,7 +1435,7 @@ def _recalculate_project_after_variation_removal(project, removed_net_with_vat):
 # ===============================
 # File Download Endpoint (Protected)
 # ===============================
-@api_view(['GET'])
+@api_view(['GET', 'OPTIONS'])
 @permission_classes([IsAuthenticated])
 def download_file(request, file_path):
     """
@@ -1340,6 +1449,31 @@ def download_file(request, file_path):
     import mimetypes
     
     logger = logging.getLogger(__name__)
+    
+    # ✅ معالجة OPTIONS requests (CORS preflight)
+    if request.method == 'OPTIONS':
+        from django.conf import settings
+        response = Response()
+        origin = request.headers.get('Origin')
+        
+        if settings.DEBUG:
+            if origin:
+                response['Access-Control-Allow-Origin'] = origin
+            else:
+                response['Access-Control-Allow-Origin'] = '*'
+        else:
+            if origin and origin in settings.CORS_ALLOWED_ORIGINS:
+                response['Access-Control-Allow-Origin'] = origin
+            elif settings.CORS_ALLOW_ALL_ORIGINS:
+                response['Access-Control-Allow-Origin'] = origin or '*'
+            elif settings.CORS_ALLOWED_ORIGINS:
+                response['Access-Control-Allow-Origin'] = settings.CORS_ALLOWED_ORIGINS[0]
+        
+        response['Access-Control-Allow-Credentials'] = 'true'
+        response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        response['Access-Control-Allow-Headers'] = 'authorization, content-type'
+        response['Access-Control-Max-Age'] = '86400'  # 24 hours
+        return response
     
     try:
         # ✅ تنظيف المسار لمنع directory traversal attacks
@@ -1448,10 +1582,33 @@ def download_file(request, file_path):
             
             response['Content-Disposition'] = f'inline; filename="{filename}"'
             
-            # ✅ إضافة CORS headers إذا لزم الأمر
+            # ✅ إضافة CORS headers بشكل صحيح
             response['Access-Control-Allow-Credentials'] = 'true'
-            origin = request.headers.get('Origin', '*')
-            response['Access-Control-Allow-Origin'] = origin
+            origin = request.headers.get('Origin')
+            
+            # ✅ التحقق من CORS_ALLOWED_ORIGINS في settings
+            from django.conf import settings
+            if settings.DEBUG:
+                # في التطوير: السماح بأي origin
+                if origin:
+                    response['Access-Control-Allow-Origin'] = origin
+                else:
+                    response['Access-Control-Allow-Origin'] = '*'
+            else:
+                # في الإنتاج: التحقق من CORS_ALLOWED_ORIGINS
+                if origin and origin in settings.CORS_ALLOWED_ORIGINS:
+                    response['Access-Control-Allow-Origin'] = origin
+                elif settings.CORS_ALLOW_ALL_ORIGINS:
+                    response['Access-Control-Allow-Origin'] = origin or '*'
+                else:
+                    # إذا لم يكن origin مسموحاً، نستخدم أول origin مسموح
+                    if settings.CORS_ALLOWED_ORIGINS:
+                        response['Access-Control-Allow-Origin'] = settings.CORS_ALLOWED_ORIGINS[0]
+            
+            # ✅ إضافة headers إضافية للـ CORS
+            response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+            response['Access-Control-Allow-Headers'] = 'authorization, content-type'
+            response['Access-Control-Expose-Headers'] = 'content-type, content-disposition'
             
             # ✅ إضافة Cache-Control للتحسين
             response['Cache-Control'] = 'private, max-age=3600'
