@@ -365,7 +365,7 @@ class SitePlan(TimeStampedModel):
     def get_application_file_path(instance, filename):
         """حفظ ملف مخطط الأرض في المسار المنظم للمشروع."""
         project = get_project_from_instance(instance)
-        # ✅ استخدام اسم ملف ثابت: مخطط_الأرض
+        # ✅ استخدام اسم ملف ثابت: مخطط_الأرض_Site_Plan
         name, ext = os.path.splitext(filename)
         ext = ext or '.pdf'
         clean_filename = f"مخطط_الأرض_Site_Plan{ext}"
@@ -585,7 +585,7 @@ class BuildingLicense(TimeStampedModel):
     def get_building_license_file_path(instance, filename):
         """حفظ ملف رخصة البناء في المسار المنظم للمشروع."""
         project = get_project_from_instance(instance)
-        # ✅ استخدام اسم ملف ثابت: رخصة_البناء
+        # ✅ استخدام اسم ملف ثابت: رخصة_البناء_Building_Permit
         name, ext = os.path.splitext(filename)
         ext = ext or '.pdf'
         clean_filename = f"رخصة_البناء_Building_Permit{ext}"
@@ -769,9 +769,10 @@ class Contract(TimeStampedModel):
     def get_quantities_table_file_path(instance, filename):
         """حفظ جدول الكميات في المسار المنظم للمشروع."""
         project = get_project_from_instance(instance)
-        # ✅ استخدام اسم ملف ثابت: جدول_الكميات
+        # ✅ استخدام اسم ملف ثابت: جدول_الكميات_BOQ
         name, ext = os.path.splitext(filename)
-        clean_filename = f"جدول_الكميات_BOQ{ext}" if ext else "جدول_الكميات_BOQ"
+        ext = ext or '.pdf'
+        clean_filename = f"جدول_الكميات_BOQ{ext}"
         if project:
             return get_project_file_path(project, 'contracts', clean_filename)
         return f"contracts/{clean_filename}"
