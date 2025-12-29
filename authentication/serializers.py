@@ -110,19 +110,85 @@ class TenantSettingsSerializer(serializers.ModelSerializer):
         return instance
     
     def get_logo_url(self, obj):
+        """إرجاع URL كامل للوجو باستخدام /api/files/ بدلاً من /media/"""
         if obj.company_logo:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.company_logo.url)
-            return obj.company_logo.url
+            # ✅ استخدام helper function من projects.serializers للحصول على مسار نسبي
+            try:
+                from projects.serializers import get_file_url
+                request = self.context.get('request')
+                file_url = get_file_url(obj.company_logo, None)  # الحصول على مسار نسبي
+                if file_url:
+                    # ✅ بناء URL كامل باستخدام /api/files/ بدلاً من /media/
+                    if request:
+                        base_url = request.build_absolute_uri('/').rstrip('/')
+                        return f"{base_url}/api/files/{file_url.lstrip('/')}"
+                    # ✅ إذا لم يكن هناك request، نرجع مسار نسبي (الـ frontend سيقوم بتحويله)
+                    return file_url
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Error getting logo_url using get_file_url: {e}")
+            
+            # ✅ Fallback: بناء URL من Django url
+            try:
+                request = self.context.get('request')
+                django_url = obj.company_logo.url
+                # ✅ استخراج المسار النسبي من Django URL
+                if django_url.startswith('/media/'):
+                    relative_path = django_url[7:]  # إزالة "/media/"
+                elif django_url.startswith('media/'):
+                    relative_path = django_url[6:]  # إزالة "media/"
+                else:
+                    relative_path = django_url.lstrip('/')
+                
+                # ✅ بناء URL كامل باستخدام /api/files/
+                if request:
+                    base_url = request.build_absolute_uri('/').rstrip('/')
+                    return f"{base_url}/api/files/{relative_path}"
+                return relative_path
+            except Exception:
+                return None
         return None
     
     def get_background_image_url(self, obj):
+        """إرجاع URL كامل للخلفية باستخدام /api/files/ بدلاً من /media/"""
         if obj.background_image:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.background_image.url)
-            return obj.background_image.url
+            # ✅ استخدام helper function من projects.serializers للحصول على مسار نسبي
+            try:
+                from projects.serializers import get_file_url
+                request = self.context.get('request')
+                file_url = get_file_url(obj.background_image, None)  # الحصول على مسار نسبي
+                if file_url:
+                    # ✅ بناء URL كامل باستخدام /api/files/ بدلاً من /media/
+                    if request:
+                        base_url = request.build_absolute_uri('/').rstrip('/')
+                        return f"{base_url}/api/files/{file_url.lstrip('/')}"
+                    # ✅ إذا لم يكن هناك request، نرجع مسار نسبي (الـ frontend سيقوم بتحويله)
+                    return file_url
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Error getting background_image_url using get_file_url: {e}")
+            
+            # ✅ Fallback: بناء URL من Django url
+            try:
+                request = self.context.get('request')
+                django_url = obj.background_image.url
+                # ✅ استخراج المسار النسبي من Django URL
+                if django_url.startswith('/media/'):
+                    relative_path = django_url[7:]  # إزالة "/media/"
+                elif django_url.startswith('media/'):
+                    relative_path = django_url[6:]  # إزالة "media/"
+                else:
+                    relative_path = django_url.lstrip('/')
+                
+                # ✅ بناء URL كامل باستخدام /api/files/
+                if request:
+                    base_url = request.build_absolute_uri('/').rstrip('/')
+                    return f"{base_url}/api/files/{relative_path}"
+                return relative_path
+            except Exception:
+                return None
         return None
     
     def get_current_users_count(self, obj):
@@ -158,31 +224,87 @@ class TenantThemeSerializer(serializers.ModelSerializer):
             return None
     
     def get_logo_url(self, obj):
+        """إرجاع URL كامل للوجو باستخدام /api/files/ بدلاً من /media/"""
         try:
             if obj.company_logo:
-                request = self.context.get('request')
-                if request:
-                    try:
-                        return request.build_absolute_uri(obj.company_logo.url)
-                    except Exception:
-                        # إذا فشل بناء URL، نرجع المسار النسبي
-                        return obj.company_logo.url if hasattr(obj.company_logo, 'url') else None
-                return obj.company_logo.url if hasattr(obj.company_logo, 'url') else None
+                # ✅ استخدام helper function من projects.serializers للحصول على مسار نسبي
+                try:
+                    from projects.serializers import get_file_url
+                    request = self.context.get('request')
+                    file_url = get_file_url(obj.company_logo, None)  # الحصول على مسار نسبي
+                    if file_url:
+                        # ✅ بناء URL كامل باستخدام /api/files/ بدلاً من /media/
+                        if request:
+                            base_url = request.build_absolute_uri('/').rstrip('/')
+                            return f"{base_url}/api/files/{file_url.lstrip('/')}"
+                        return file_url
+                except Exception as e:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"Error getting logo_url using get_file_url: {e}")
+                
+                # ✅ Fallback: بناء URL من Django url
+                try:
+                    request = self.context.get('request')
+                    django_url = obj.company_logo.url
+                    # ✅ استخراج المسار النسبي من Django URL
+                    if django_url.startswith('/media/'):
+                        relative_path = django_url[7:]  # إزالة "/media/"
+                    elif django_url.startswith('media/'):
+                        relative_path = django_url[6:]  # إزالة "media/"
+                    else:
+                        relative_path = django_url.lstrip('/')
+                    
+                    # ✅ بناء URL كامل باستخدام /api/files/
+                    if request:
+                        base_url = request.build_absolute_uri('/').rstrip('/')
+                        return f"{base_url}/api/files/{relative_path}"
+                    return relative_path
+                except Exception:
+                    return None
         except Exception:
             return None
         return None
     
     def get_background_image_url(self, obj):
+        """إرجاع URL كامل للخلفية باستخدام /api/files/ بدلاً من /media/"""
         try:
             if obj.background_image:
-                request = self.context.get('request')
-                if request:
-                    try:
-                        return request.build_absolute_uri(obj.background_image.url)
-                    except Exception:
-                        # إذا فشل بناء URL، نرجع المسار النسبي
-                        return obj.background_image.url if hasattr(obj.background_image, 'url') else None
-                return obj.background_image.url if hasattr(obj.background_image, 'url') else None
+                # ✅ استخدام helper function من projects.serializers للحصول على مسار نسبي
+                try:
+                    from projects.serializers import get_file_url
+                    request = self.context.get('request')
+                    file_url = get_file_url(obj.background_image, None)  # الحصول على مسار نسبي
+                    if file_url:
+                        # ✅ بناء URL كامل باستخدام /api/files/ بدلاً من /media/
+                        if request:
+                            base_url = request.build_absolute_uri('/').rstrip('/')
+                            return f"{base_url}/api/files/{file_url.lstrip('/')}"
+                        return file_url
+                except Exception as e:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"Error getting background_image_url using get_file_url: {e}")
+                
+                # ✅ Fallback: بناء URL من Django url
+                try:
+                    request = self.context.get('request')
+                    django_url = obj.background_image.url
+                    # ✅ استخراج المسار النسبي من Django URL
+                    if django_url.startswith('/media/'):
+                        relative_path = django_url[7:]  # إزالة "/media/"
+                    elif django_url.startswith('media/'):
+                        relative_path = django_url[6:]  # إزالة "media/"
+                    else:
+                        relative_path = django_url.lstrip('/')
+                    
+                    # ✅ بناء URL كامل باستخدام /api/files/
+                    if request:
+                        base_url = request.build_absolute_uri('/').rstrip('/')
+                        return f"{base_url}/api/files/{relative_path}"
+                    return relative_path
+                except Exception:
+                    return None
         except Exception:
             return None
         return None
@@ -338,11 +460,43 @@ class UserSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'date_joined', 'last_login', 'is_superuser', 'tenant']
     
     def get_avatar_url(self, obj):
+        """إرجاع URL كامل للصورة الشخصية باستخدام /api/files/ بدلاً من /media/"""
         if obj.avatar:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.avatar.url)
-            return obj.avatar.url
+            # ✅ استخدام helper function من projects.serializers للحصول على مسار نسبي
+            try:
+                from projects.serializers import get_file_url
+                request = self.context.get('request')
+                file_url = get_file_url(obj.avatar, None)  # الحصول على مسار نسبي
+                if file_url:
+                    # ✅ بناء URL كامل باستخدام /api/files/ بدلاً من /media/
+                    if request:
+                        base_url = request.build_absolute_uri('/').rstrip('/')
+                        return f"{base_url}/api/files/{file_url.lstrip('/')}"
+                    return file_url
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Error getting avatar_url using get_file_url: {e}")
+            
+            # ✅ Fallback: بناء URL من Django url
+            try:
+                request = self.context.get('request')
+                django_url = obj.avatar.url
+                # ✅ استخراج المسار النسبي من Django URL
+                if django_url.startswith('/media/'):
+                    relative_path = django_url[7:]  # إزالة "/media/"
+                elif django_url.startswith('media/'):
+                    relative_path = django_url[6:]  # إزالة "media/"
+                else:
+                    relative_path = django_url.lstrip('/')
+                
+                # ✅ بناء URL كامل باستخدام /api/files/
+                if request:
+                    base_url = request.build_absolute_uri('/').rstrip('/')
+                    return f"{base_url}/api/files/{relative_path}"
+                return relative_path
+            except Exception:
+                return None
         return None
     
     def get_permissions(self, obj):
@@ -483,11 +637,43 @@ class ProfileSerializer(serializers.ModelSerializer):
         }
     
     def get_avatar_url(self, obj):
+        """إرجاع URL كامل للصورة الشخصية باستخدام /api/files/ بدلاً من /media/"""
         if obj.avatar:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(obj.avatar.url)
-            return obj.avatar.url
+            # ✅ استخدام helper function من projects.serializers للحصول على مسار نسبي
+            try:
+                from projects.serializers import get_file_url
+                request = self.context.get('request')
+                file_url = get_file_url(obj.avatar, None)  # الحصول على مسار نسبي
+                if file_url:
+                    # ✅ بناء URL كامل باستخدام /api/files/ بدلاً من /media/
+                    if request:
+                        base_url = request.build_absolute_uri('/').rstrip('/')
+                        return f"{base_url}/api/files/{file_url.lstrip('/')}"
+                    return file_url
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Error getting avatar_url using get_file_url: {e}")
+            
+            # ✅ Fallback: بناء URL من Django url
+            try:
+                request = self.context.get('request')
+                django_url = obj.avatar.url
+                # ✅ استخراج المسار النسبي من Django URL
+                if django_url.startswith('/media/'):
+                    relative_path = django_url[7:]  # إزالة "/media/"
+                elif django_url.startswith('media/'):
+                    relative_path = django_url[6:]  # إزالة "media/"
+                else:
+                    relative_path = django_url.lstrip('/')
+                
+                # ✅ بناء URL كامل باستخدام /api/files/
+                if request:
+                    base_url = request.build_absolute_uri('/').rstrip('/')
+                    return f"{base_url}/api/files/{relative_path}"
+                return relative_path
+            except Exception:
+                return None
         return None
     
     def get_permissions(self, obj):
