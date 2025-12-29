@@ -8,8 +8,9 @@ from django.core.files.storage import default_storage
 from rest_framework import serializers
 from .models import (
     Project, SitePlan, SitePlanOwner, BuildingLicense, Contract, Awarding, StartOrder, Payment,
-    Variation, ActualInvoice, Consultant, ProjectConsultant
+    Variation, ActualInvoice, Consultant, ProjectConsultant, ProjectSchedule, ExcavationStartNotice
 )
+from .utils import save_project_file, get_project_file_path
 
 # Import WorkflowStage for serializer
 try:
@@ -1574,12 +1575,19 @@ class ContractSerializer(serializers.ModelSerializer):
     quantities_table_file = serializers.FileField(required=False, allow_null=True)
     approved_materials_table_file = serializers.FileField(required=False, allow_null=True)
     price_offer_file = serializers.FileField(required=False, allow_null=True)
-    # ✅ المخططات التعاقدية (مقسمة إلى 4 أنواع)
-    mep_drawings_file = serializers.FileField(required=False, allow_null=True)
+    # ✅ المخططات التعاقدية (جميع الأنواع)
     architectural_drawings_file = serializers.FileField(required=False, allow_null=True)
     structural_drawings_file = serializers.FileField(required=False, allow_null=True)
+    ac_drawings_file = serializers.FileField(required=False, allow_null=True)
+    electrical_drawings_file = serializers.FileField(required=False, allow_null=True)
+    water_supply_drawings_file = serializers.FileField(required=False, allow_null=True)
+    drainage_drawings_file = serializers.FileField(required=False, allow_null=True)
+    telecommunication_drawings_file = serializers.FileField(required=False, allow_null=True)
+    fire_fighting_drawings_file = serializers.FileField(required=False, allow_null=True)
+    cctv_drawings_file = serializers.FileField(required=False, allow_null=True)
+    # ⚠️ الحقول القديمة - للتوافق مع البيانات الموجودة
+    mep_drawings_file = serializers.FileField(required=False, allow_null=True)
     decoration_drawings_file = serializers.FileField(required=False, allow_null=True)
-    # ⚠️ الحقل القديم - سيتم إزالته بعد migration
     contractual_drawings_file = serializers.FileField(required=False, allow_null=True)
     general_specifications_file = serializers.FileField(required=False, allow_null=True)
     
@@ -1588,6 +1596,72 @@ class ContractSerializer(serializers.ModelSerializer):
     
     # ✅ Pattern لاستخراج attachments من FormData
     _attachments_key_re = re.compile(r"^attachments\[(\d+)\]\[(\w+)\]$")
+
+    def _get_attachment_subfolder(self, attachment_type, attachment_index=None, existing_attachments=None):
+        """
+        تحديد subfolder بناءً على نوع المرفق
+        الآن كل الملفات في مجلد واحد فقط: contracts - العقود
+        
+        Args:
+            attachment_type: نوع المرفق (appendix, explanation, etc.)
+            attachment_index: الفهرس في المصفوفة (غير مستخدم الآن)
+            existing_attachments: قائمة المرفقات الموجودة (غير مستخدم الآن)
+        """
+        # كل الملفات في مجلد واحد بدون subfolders
+        return None
+    
+    def _get_attachment_filename(self, attachment_type, attachment_index, original_filename, existing_attachments=None):
+        """
+        إنشاء اسم ملف ثابت للمرفقات الديناميكية مع الترقيم
+        ✅ الرقم يظهر فقط إذا كان هناك أكثر من ملف من نفس النوع
+        
+        Args:
+            attachment_type: نوع المرفق (appendix, explanation, etc.)
+            attachment_index: الفهرس في المصفوفة
+            original_filename: اسم الملف الأصلي (للاستخراج الامتداد)
+            existing_attachments: قائمة المرفقات الموجودة (لحساب الرقم الصحيح)
+        
+        Returns:
+            str: اسم ملف ثابت مع الامتداد (مع رقم فقط إذا كان هناك أكثر من ملف)
+        """
+        import os
+        name, ext = os.path.splitext(original_filename)
+        ext = ext or '.pdf'
+        
+        # حساب عدد الملفات من نفس النوع في القائمة الكاملة
+        total_count = 0
+        if existing_attachments:
+            # حساب عدد الملفات من نفس النوع في القائمة الكاملة (بما في ذلك الملف الحالي)
+            total_count = sum(1 for att in existing_attachments 
+                            if att.get('type') == attachment_type)
+        
+        # ✅ إضافة الرقم فقط إذا كان هناك أكثر من ملف من نفس النوع
+        if total_count > 1:
+            # حساب رقم الملف الحالي
+            if existing_attachments and attachment_index is not None:
+                # حساب عدد الملفات من نفس النوع قبل هذا الملف
+                count = sum(1 for i, att in enumerate(existing_attachments) 
+                           if i < attachment_index and att.get('type') == attachment_type)
+                number = count + 1  # الرقم يبدأ من 1
+            elif attachment_index is not None:
+                number = attachment_index + 1
+            else:
+                number = 1
+            
+            number_str = f"_{number:02d}"  # تنسيق الرقم كـ "_01", "_02", إلخ
+        else:
+            number_str = ""  # بدون رقم إذا كان الملف الوحيد
+        
+        filename_mapping = {
+            "appendix": f"ملحق_عقد_Contract_Addendum{number_str}",
+            "explanation": f"توضيحات_تعاقدية_Contract_Clarifications{number_str}",
+            "bank_contract": "عقد_البنك_Bank_Contract",
+            "price_offer": "عرض_السعر_Price_Offer",
+            "agreement": "ملحق_اتفاق_موقع_Site_Agreement",
+        }
+        
+        clean_name = filename_mapping.get(attachment_type, f"مرفق_تعاقدي_Contract_Attachment{number_str}")
+        return f"{clean_name}{ext}"
 
     class Meta:
         model = Contract
@@ -1603,6 +1677,7 @@ class ContractSerializer(serializers.ModelSerializer):
             "contractor_phone", "contractor_email",
             # القيم والمدة
             "total_project_value", "total_bank_value", "total_owner_value", "project_duration_months",
+            "total_floor_area",
             "project_end_date",
             # أتعاب (المالك)
             "owner_includes_consultant", "owner_fee_design_percent", "owner_fee_supervision_percent",
@@ -1614,11 +1689,15 @@ class ContractSerializer(serializers.ModelSerializer):
             "contract_file", "contract_appendix_file", "contract_explanation_file",
             # المرفقات الثابتة
             "quantities_table_file", "approved_materials_table_file", "price_offer_file",
-            # المخططات التعاقدية (مقسمة)
-            "mep_drawings_file", "architectural_drawings_file", "structural_drawings_file", "decoration_drawings_file",
-            # ⚠️ الحقل القديم - سيتم إزالته بعد migration
-            "contractual_drawings_file",
-            "general_specifications_file",
+            # المخططات التعاقدية (جميع الأنواع)
+            "architectural_drawings_file", "structural_drawings_file",
+            "ac_drawings_file", "electrical_drawings_file",
+            "water_supply_drawings_file", "drainage_drawings_file",
+            "telecommunication_drawings_file", "fire_fighting_drawings_file",
+            "cctv_drawings_file",
+            # ⚠️ الحقول القديمة - للتوافق مع البيانات الموجودة
+            "mep_drawings_file", "decoration_drawings_file",
+            "contractual_drawings_file", "general_specifications_file",
             # المرفقات الديناميكية
             "attachments",
             # الملاحظات
@@ -1948,21 +2027,35 @@ class ContractSerializer(serializers.ModelSerializer):
                 saved_attachments = []
                 for idx, att in enumerate(attachments_data):
                     att_dict = {
-                        "type": att.get("type", "main_contract"),
+                        "type": att.get("type", "appendix"),  # ✅ القيمة الافتراضية هي "appendix" وليس "main_contract"
                         "date": att.get("date"),
                         "notes": att.get("notes", ""),
+                        "price": att.get("price"),  # ✅ حفظ السعر
                         "file_url": None,
                         "file_name": None,
                     }
                     # ✅ إذا كان هناك ملف جديد
                     if "_file" in att and att["_file"]:
-                        from django.core.files.storage import default_storage
                         file_obj = att["_file"]
-                        file_path = default_storage.save(f"contracts/attachments/{obj.id}/{file_obj.name}", file_obj)
+                        attachment_type = att.get("type", "appendix")
+                        # ✅ تحديد subfolder (لا يوجد subfolder - كل الملفات في مجلد واحد)
+                        existing_attachments = attachments_data  # ✅ استخدام attachments_data لحساب العدد
+                        subfolder = self._get_attachment_subfolder(attachment_type, idx, existing_attachments)
+                        # ✅ استخدام اسم ملف ثابت مع الترقيم (الرقم يظهر فقط إذا كان هناك أكثر من ملف)
+                        standard_filename = self._get_attachment_filename(attachment_type, idx, file_obj.name, existing_attachments)
+                        # ✅ استخدام النظام الموحد لحفظ الملفات
+                        file_path = save_project_file(
+                            file_obj, 
+                            obj.project, 
+                            'contracts', 
+                            filename=standard_filename,
+                            subfolder=subfolder
+                        )
                         # ✅ توحيد المسار باستخدام normalize_file_url
                         att_dict["file_url"] = normalize_file_url(default_storage.url(file_path))
-                        att_dict["file_name"] = file_obj.name
-                        logger.info(f"✅ Saved attachment[{idx}] file: {file_obj.name} -> {att_dict['file_url']}")
+                        # ✅ استخدام الاسم الثابت بدلاً من الاسم الأصلي
+                        att_dict["file_name"] = standard_filename
+                        logger.info(f"✅ Saved attachment[{idx}] file: {file_obj.name} -> {att_dict['file_url']} (standard name: {standard_filename})")
                     # ✅ إذا كان هناك file_url موجود (من attachment قديم) - توحيده
                     elif att.get("file_url"):
                         att_dict["file_url"] = normalize_file_url(att.get("file_url"))
@@ -2065,33 +2158,64 @@ class ContractSerializer(serializers.ModelSerializer):
                     logger = logging.getLogger(__name__)
                     logger.info(f"🔍 Processing attachment[{idx}] (update): type={att.get('type')}, has_file={'_file' in att}, file_url={att.get('file_url')}")
                     
+                    # ✅ الحصول على attachment القديم من instance إذا كان موجوداً
+                    old_att = None
+                    if instance.attachments and isinstance(instance.attachments, list) and len(instance.attachments) > len(saved_attachments):
+                        old_att = instance.attachments[len(saved_attachments)]
+                    
                     att_dict = {
-                        "type": att.get("type", "main_contract"),
+                        "type": att.get("type", "appendix"),  # ✅ القيمة الافتراضية هي "appendix" وليس "main_contract"
                         "date": att.get("date"),
                         "notes": att.get("notes", ""),
-                        "file_url": att.get("file_url"),  # الحفاظ على الملف القديم
-                        "file_name": att.get("file_name"),
+                        "price": att.get("price"),  # ✅ حفظ السعر
+                        # ✅ استخدام file_url من att أولاً، ثم من old_att إذا لم يكن موجوداً
+                        "file_url": att.get("file_url") or (old_att.get("file_url") if old_att and old_att.get("file_url") else None),
+                        "file_name": att.get("file_name") or (old_att.get("file_name") if old_att and old_att.get("file_name") else None),
                     }
                     # ✅ إذا كان هناك ملف جديد
                     if "_file" in att and att["_file"]:
                         from django.core.files.storage import default_storage
                         file_obj = att["_file"]
+                        attachment_type = att.get("type", "appendix")
                         # ✅ حذف الملف القديم إذا كان موجوداً
-                        old_att = None
-                        if updated.attachments and isinstance(updated.attachments, list) and len(updated.attachments) > len(saved_attachments):
-                            old_att = updated.attachments[len(saved_attachments)]
-                            if old_att and old_att.get("file_url"):
-                                try:
-                                    old_path = old_att["file_url"].replace(default_storage.url(""), "")
-                                    if default_storage.exists(old_path):
-                                        default_storage.delete(old_path)
-                                except:
-                                    pass
-                        file_path = default_storage.save(f"contracts/attachments/{instance.id}/{file_obj.name}", file_obj)
+                        if old_att and old_att.get("file_url"):
+                            try:
+                                # ✅ normalize_file_url قد يُرجع مسار نسبي، نحتاج إلى استخراج المسار الصحيح
+                                old_url = old_att["file_url"]
+                                # إذا كان URL نسبي (بدون /media/ أو http://)، استخدمه مباشرة
+                                if not old_url.startswith('http://') and not old_url.startswith('https://'):
+                                    old_path = old_url.lstrip('/')
+                                else:
+                                    # إذا كان URL مطلق، استخرج المسار النسبي
+                                    from urllib.parse import urlparse
+                                    parsed = urlparse(old_url)
+                                    old_path = parsed.path.lstrip('/')
+                                    if old_path.startswith('media/'):
+                                        old_path = old_path[6:]
+                                if old_path and default_storage.exists(old_path):
+                                    default_storage.delete(old_path)
+                                    logger.info(f"🗑️ Deleted old attachment file: {old_path}")
+                            except Exception as e:
+                                logger.warning(f"⚠️ Failed to delete old attachment file: {e}")
+                                pass
+                        # ✅ تحديد subfolder (لا يوجد subfolder - كل الملفات في مجلد واحد)
+                        existing_attachments = attachments_data  # ✅ استخدام attachments_data لحساب العدد
+                        subfolder = self._get_attachment_subfolder(attachment_type, idx, existing_attachments)
+                        # ✅ استخدام اسم ملف ثابت مع الترقيم (الرقم يظهر فقط إذا كان هناك أكثر من ملف)
+                        standard_filename = self._get_attachment_filename(attachment_type, idx, file_obj.name, existing_attachments)
+                        # ✅ استخدام النظام الموحد لحفظ الملفات
+                        file_path = save_project_file(
+                            file_obj,
+                            instance.project,
+                            'contracts',
+                            filename=standard_filename,
+                            subfolder=subfolder
+                        )
                         # ✅ توحيد المسار باستخدام normalize_file_url
                         att_dict["file_url"] = normalize_file_url(default_storage.url(file_path))
-                        att_dict["file_name"] = file_obj.name
-                        logger.info(f"✅ Saved attachment[{idx}] file (update): {file_obj.name} -> {att_dict['file_url']}")
+                        # ✅ استخدام الاسم الثابت بدلاً من الاسم الأصلي
+                        att_dict["file_name"] = standard_filename
+                        logger.info(f"✅ Saved attachment[{idx}] file (update): {file_obj.name} -> {att_dict['file_url']} (standard name: {standard_filename})")
                     # ✅ إذا كان هناك file_url موجود (من attachment قديم) ولم يكن هناك ملف جديد - توحيده
                     elif att.get("file_url"):
                         att_dict["file_url"] = normalize_file_url(att.get("file_url"))
@@ -2317,11 +2441,36 @@ class StartOrderSerializer(serializers.ModelSerializer):
                 }
                 # ✅ إذا كان هناك ملف جديد
                 if "_file" in ext and ext["_file"]:
-                    from django.core.files.storage import default_storage
                     file_obj = ext["_file"]
-                    file_path = default_storage.save(f"start_orders/extensions/{obj.id}/{file_obj.name}", file_obj)
+                    # ✅ استخدام اسم ملف ثابت: تمديد_Extension (مع رقم فقط إذا كان هناك أكثر من ملف)
+                    import os
+                    from django.core.files.storage import default_storage
+                    from .utils import get_project_folder_name
+                    name, ext_suffix = os.path.splitext(file_obj.name)
+                    ext_suffix = ext_suffix or '.pdf'
+                    # ✅ حساب عدد التمديدات الكلي (جميع التمديدات المرسلة)
+                    total_count = len(extensions_data)
+                    # ✅ إضافة الرقم فقط إذا كان هناك أكثر من ملف
+                    if total_count > 1:
+                        extension_index = len(saved_extensions) + 1
+                        standard_filename = f"تمديد_Extension_{extension_index:02d}{ext_suffix}"
+                    else:
+                        standard_filename = f"تمديد_Extension{ext_suffix}"
+                    # ✅ حفظ في Project Schedule– المدة الزمنية للمشروع (نفس مجلد أمر المباشرة)
+                    project_folder = get_project_folder_name(obj.project)
+                    actual_folder_name = 'Project Schedule– المدة الزمنية للمشروع'
+                    file_path = f"projects/{project_folder}/{actual_folder_name}/{standard_filename}"
+                    file_path = file_path.replace('\\', '/')
+                    # ✅ حذف الملف القديم إذا كان موجوداً
+                    if default_storage.exists(file_path):
+                        try:
+                            default_storage.delete(file_path)
+                        except Exception:
+                            pass
+                    file_path = default_storage.save(file_path, file_obj)
                     ext_dict["file_url"] = normalize_file_url(default_storage.url(file_path))
-                    ext_dict["file_name"] = file_obj.name
+                    # ✅ استخدام الاسم الثابت بدلاً من الاسم الأصلي
+                    ext_dict["file_name"] = standard_filename
                 # ✅ إذا كان هناك file_url موجود
                 elif ext.get("file_url"):
                     ext_dict["file_url"] = normalize_file_url(ext.get("file_url"))
@@ -2334,6 +2483,8 @@ class StartOrderSerializer(serializers.ModelSerializer):
     
     def update(self, instance, validated_data):
         """تحديث StartOrder مع إعادة حساب project_end_date"""
+        from django.core.files.uploadedfile import InMemoryUploadedFile, UploadedFile
+        
         extensions_data = validated_data.pop("extensions", None)
         start_order_date = validated_data.get("start_order_date", instance.start_order_date)
         project = instance.project
@@ -2343,6 +2494,15 @@ class StartOrderSerializer(serializers.ModelSerializer):
             extensions_to_use = extensions_data if extensions_data is not None else (instance.extensions or [])
             project_end_date = self._calculate_project_end_date(start_order_date, extensions_to_use, project)
             validated_data["project_end_date"] = project_end_date
+        
+        # ✅ حذف الملف القديم قبل حفظ الجديد لتجنب إضافة لاحقة على الاسم
+        file_obj = validated_data.get("start_order_file")
+        if file_obj and isinstance(file_obj, (InMemoryUploadedFile, UploadedFile)):
+            if instance.start_order_file:
+                try:
+                    instance.start_order_file.delete(save=False)
+                except Exception:
+                    pass
         
         # ✅ تحديث الحقول
         for attr, value in validated_data.items():
@@ -2365,11 +2525,36 @@ class StartOrderSerializer(serializers.ModelSerializer):
                     }
                     # ✅ إذا كان هناك ملف جديد
                     if "_file" in ext and ext["_file"]:
-                        from django.core.files.storage import default_storage
                         file_obj = ext["_file"]
-                        file_path = default_storage.save(f"start_orders/extensions/{instance.id}/{file_obj.name}", file_obj)
+                        # ✅ استخدام اسم ملف ثابت: تمديد_Extension (مع رقم فقط إذا كان هناك أكثر من ملف)
+                        import os
+                        from django.core.files.storage import default_storage
+                        from .utils import get_project_folder_name
+                        name, ext_suffix = os.path.splitext(file_obj.name)
+                        ext_suffix = ext_suffix or '.pdf'
+                        # ✅ حساب عدد التمديدات الكلي (جميع التمديدات المرسلة)
+                        total_count = len(extensions_data)
+                        # ✅ إضافة الرقم فقط إذا كان هناك أكثر من ملف
+                        if total_count > 1:
+                            extension_index = len(saved_extensions) + 1
+                            standard_filename = f"تمديد_Extension_{extension_index:02d}{ext_suffix}"
+                        else:
+                            standard_filename = f"تمديد_Extension{ext_suffix}"
+                        # ✅ حفظ في Project Schedule– المدة الزمنية للمشروع (نفس مجلد أمر المباشرة)
+                        project_folder = get_project_folder_name(instance.project)
+                        actual_folder_name = 'Project Schedule– المدة الزمنية للمشروع'
+                        file_path = f"projects/{project_folder}/{actual_folder_name}/{standard_filename}"
+                        file_path = file_path.replace('\\', '/')
+                        # ✅ حذف الملف القديم إذا كان موجوداً
+                        if default_storage.exists(file_path):
+                            try:
+                                default_storage.delete(file_path)
+                            except Exception:
+                                pass
+                        file_path = default_storage.save(file_path, file_obj)
                         ext_dict["file_url"] = normalize_file_url(default_storage.url(file_path))
-                        ext_dict["file_name"] = file_obj.name
+                        # ✅ استخدام الاسم الثابت بدلاً من الاسم الأصلي
+                        ext_dict["file_name"] = standard_filename
                     # ✅ إذا كان هناك file_url موجود (وليس ملف جديد)
                     elif ext.get("file_url") and not ext.get("file_name"):
                         # احتفظ بالقيمة الحالية
@@ -2385,6 +2570,158 @@ class StartOrderSerializer(serializers.ModelSerializer):
             )
             instance.project_end_date = project_end_date
             instance.save(update_fields=["project_end_date"])
+        
+        return instance
+
+
+# =========================
+# Project Schedule
+# =========================
+class ProjectScheduleSerializer(serializers.ModelSerializer):
+    # ✅ إضافة حقل المرفق
+    schedule_file = serializers.FileField(required=False, allow_null=True)
+    
+    class Meta:
+        model = ProjectSchedule
+        fields = ['id', 'project_start_date', 'project_end_date', 'schedule_file', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'project_end_date']
+    
+    def create(self, validated_data):
+        """إنشاء ProjectSchedule مع حساب project_end_date تلقائياً"""
+        project = validated_data.get("project")
+        project_start_date = validated_data.get("project_start_date")
+        
+        # ✅ حساب project_end_date بناءً على مدة المشروع والتمديدات
+        project_end_date = self._calculate_project_end_date(project_start_date, project)
+        validated_data["project_end_date"] = project_end_date
+        
+        return ProjectSchedule.objects.create(**validated_data)
+    
+    def update(self, instance, validated_data):
+        """تحديث ProjectSchedule مع إعادة حساب project_end_date"""
+        from django.core.files.uploadedfile import InMemoryUploadedFile, UploadedFile
+        
+        project = instance.project
+        project_start_date = validated_data.get("project_start_date", instance.project_start_date)
+        
+        # ✅ إعادة حساب project_end_date إذا تغير project_start_date
+        if "project_start_date" in validated_data:
+            project_end_date = self._calculate_project_end_date(project_start_date, project)
+            validated_data["project_end_date"] = project_end_date
+        
+        # ✅ حذف الملف القديم إذا كان هناك ملف جديد
+        file_obj = validated_data.get("schedule_file")
+        if file_obj and isinstance(file_obj, (InMemoryUploadedFile, UploadedFile)):
+            if instance.schedule_file:
+                try:
+                    instance.schedule_file.delete(save=False)
+                except Exception:
+                    pass
+        
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        
+        return instance
+    
+    def _calculate_project_end_date(self, project_start_date, project):
+        """حساب تاريخ نهاية المشروع بناءً على مدة المشروع والتمديدات (نفس منطق StartOrder)"""
+        if not project_start_date:
+            return None
+        
+        from datetime import timedelta
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        try:
+            # ✅ استخدام relativedelta إذا كان متوفراً، وإلا حساب يدوي للأشهر
+            try:
+                from dateutil.relativedelta import relativedelta
+                use_relativedelta = True
+            except ImportError:
+                use_relativedelta = False
+            
+            # ✅ الحصول على project_duration_months من Contract
+            project_duration_months = 0
+            try:
+                if hasattr(project, 'contract'):
+                    contract = project.contract
+                    if contract and hasattr(contract, 'project_duration_months') and contract.project_duration_months:
+                        project_duration_months = contract.project_duration_months
+            except Exception as e:
+                logger.warning(f"_calculate_project_end_date: Error getting contract: {e}")
+                pass
+            
+            # ✅ حساب التاريخ النهائي: project_start_date + project_duration_months
+            end_date = project_start_date
+            if project_duration_months > 0:
+                if use_relativedelta:
+                    end_date = end_date + relativedelta(months=project_duration_months)
+                else:
+                    # ✅ حساب يدوي للأشهر (تقريبي - 30 يوم في الشهر)
+                    end_date = end_date + timedelta(days=project_duration_months * 30)
+            
+            # ✅ إضافة التمديدات من StartOrder (أيام وأشهر)
+            try:
+                start_order = project.start_order
+                if start_order and start_order.extensions and isinstance(start_order.extensions, list):
+                    for ext in start_order.extensions:
+                        if isinstance(ext, dict):
+                            months = int(ext.get("months", 0) or 0)
+                            days = int(ext.get("days", 0) or 0)
+                            if months > 0:
+                                if use_relativedelta:
+                                    end_date = end_date + relativedelta(months=months)
+                                else:
+                                    # ✅ حساب يدوي للأشهر
+                                    end_date = end_date + timedelta(days=months * 30)
+                            if days > 0:
+                                end_date = end_date + timedelta(days=days)
+            except StartOrder.DoesNotExist:
+                pass
+            except Exception as e:
+                logger.warning(f"_calculate_project_end_date: Error getting extensions: {e}")
+                pass
+            
+            return end_date
+        except Exception as e:
+            logger.error(f"Error calculating project_end_date: {e}", exc_info=True)
+            return None
+
+
+# =========================
+# Excavation Start Notice
+# =========================
+class ExcavationStartNoticeSerializer(serializers.ModelSerializer):
+    notice_file_name = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = ExcavationStartNotice
+        fields = ['id', 'notice_date', 'notice_file', 'notice_file_name', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+    
+    def get_notice_file_name(self, obj):
+        """الحصول على اسم ملف إشعار بدء الحفر"""
+        if obj.notice_file:
+            return obj.notice_file.name.split('/')[-1]
+        return None
+    
+    def update(self, instance, validated_data):
+        """تحديث ExcavationStartNotice مع حذف الملف القديم"""
+        from django.core.files.uploadedfile import InMemoryUploadedFile, UploadedFile
+        
+        # ✅ حذف الملف القديم قبل حفظ الجديد لتجنب إضافة لاحقة على الاسم
+        file_obj = validated_data.get("notice_file")
+        if file_obj and isinstance(file_obj, (InMemoryUploadedFile, UploadedFile)):
+            if instance.notice_file:
+                try:
+                    instance.notice_file.delete(save=False)
+                except Exception:
+                    pass
+        
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
         
         return instance
 

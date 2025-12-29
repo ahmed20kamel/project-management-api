@@ -29,6 +29,10 @@ class TenantMiddleware(MiddlewareMixin):
         """
         التحقق من tenant في View
         """
+        # ✅ تخطي Django admin - لا نتدخل في admin views
+        if request.path.startswith('/admin/'):
+            return None
+        
         # السماح للـ public endpoints (مثل تسجيل الشركة، تسجيل الدخول)
         public_paths = [
             '/api/auth/register-company/',
@@ -44,11 +48,20 @@ class TenantMiddleware(MiddlewareMixin):
             if not hasattr(request, 'tenant') or request.tenant is None:
                 # السماح للـ superuser فقط
                 if not request.user.is_superuser:
-                    from rest_framework.response import Response
-                    from rest_framework import status
-                    return Response(
-                        {'error': 'User is not associated with any tenant'},
-                        status=status.HTTP_403_FORBIDDEN
-                    )
+                    # ✅ للـ API views فقط: استخدم DRF Response
+                    if request.path.startswith('/api/'):
+                        from rest_framework.response import Response
+                        from rest_framework import status
+                        return Response(
+                            {'error': 'User is not associated with any tenant'},
+                            status=status.HTTP_403_FORBIDDEN
+                        )
+                    else:
+                        # ✅ للـ non-API views: استخدم Django HttpResponse
+                        from django.http import HttpResponse
+                        return HttpResponse(
+                            'User is not associated with any tenant',
+                            status=403
+                        )
         
         return None

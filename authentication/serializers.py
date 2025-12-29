@@ -65,10 +65,14 @@ class TenantSettingsSerializer(serializers.ModelSerializer):
         
         # ✅ Logging قبل التحديث
         logger.info(f"Updating TenantSettings for tenant {instance.tenant.id}")
-        logger.info(f"Validated data: {validated_data}")
+        logger.info(f"Validated data keys: {list(validated_data.keys())}")
         
-        # ✅ تحديث جميع الحقول
+        # ✅ تحديث جميع الحقول (فقط الحقول الموجودة في validated_data)
+        # لا نحدث الحقول المطلوبة إذا لم تكن في validated_data (partial update)
         for attr, value in validated_data.items():
+            # ✅ تخطي الحقول الفارغة (None أو empty string) إلا إذا كانت ملفات
+            if value is None or (isinstance(value, str) and value.strip() == '' and attr not in ['company_logo', 'background_image']):
+                continue
             setattr(instance, attr, value)
         
         # ✅ حفظ في قاعدة البيانات

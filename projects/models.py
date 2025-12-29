@@ -1,6 +1,8 @@
+import os
 from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator, RegexValidator
 from decimal import Decimal
+from .utils import get_project_file_path, get_project_from_instance, get_project_folder_name, sanitize_filename
 
 # ====== أساس timestamps ======
 class TimeStampedModel(models.Model):
@@ -361,10 +363,18 @@ class SitePlan(TimeStampedModel):
     application_date = models.DateField(null=True, blank=True)
     
     def get_application_file_path(instance, filename):
-        """حفظ ملف مخطط الأرض باسم ثابت داخل مجلد المشروع لتفادي إضافة لاحقة."""
-        ext = filename.split('.')[-1] if '.' in filename else 'pdf'
+        """حفظ ملف مخطط الأرض في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: مخطط_الأرض
+        name, ext = os.path.splitext(filename)
+        ext = ext or '.pdf'
+        clean_filename = f"مخطط_الأرض_Site_Plan{ext}"
+        if project:
+            # حفظ مباشرة في Project Info- معلومات المشروع بدون subfolder
+            return get_project_file_path(project, 'project_info', clean_filename)
+        # Fallback للتوافق مع البيانات القديمة
         project_part = instance.project_id or "project"
-        return f"siteplans/applications/{project_part}/مخطط_الأرض.{ext}"
+        return f"siteplans/applications/{project_part}/مخطط_الأرض{ext}"
     
     application_file = models.FileField(upload_to=get_application_file_path, null=True, blank=True)
 
@@ -384,13 +394,28 @@ class SitePlanOwner(TimeStampedModel):
     id_expiry_date = models.DateField(null=True, blank=True)
     
     def get_id_attachment_path(instance, filename):
-        """حفظ ملف بطاقة الهوية باسم ثابت داخل مجلد المالك/المشروع لتفادي إضافة لاحقة."""
+        """حفظ ملف بطاقة الهوية في Project Info- معلومات المشروع."""
+        project = get_project_from_instance(instance)
+        if project:
+            owner_index = getattr(instance, '_owner_index', instance.id if instance.id else 1)
+            # استخدام اسم ملف قصير ومنظم
+            name, ext = os.path.splitext(filename)
+            # تقصير اسم الملف لتجنب مشاكل max_length
+            # ✅ استخدام اسم ملف يميز بين المالك والمفوض
+            is_authorized = getattr(instance, 'is_authorized', False)
+            if is_authorized:
+                clean_filename = f"id_authorized_{owner_index}{ext}" if ext else f"id_authorized_{owner_index}"
+            else:
+                clean_filename = f"id_owner_{owner_index}{ext}" if ext else f"id_owner_{owner_index}"
+            # حفظ مباشرة في Project Info- معلومات المشروع بدون subfolder
+            return get_project_file_path(project, 'project_info', clean_filename)
+        # Fallback للتوافق مع البيانات القديمة
         ext = filename.split('.')[-1] if '.' in filename else 'pdf'
         owner_index = getattr(instance, '_owner_index', instance.id if instance.id else 1)
         siteplan_part = instance.siteplan_id or "siteplan"
-        return f"owners/ids/{siteplan_part}/بطاقة_الهوية_{owner_index}.{ext}"
+        return f"siteplan/{siteplan_part}/بطاقة_الهوية_{owner_index}.{ext}"
     
-    id_attachment = models.FileField(upload_to=get_id_attachment_path, null=True, blank=True)
+    id_attachment = models.FileField(upload_to=get_id_attachment_path, null=True, blank=True, max_length=500)
     right_hold_type = models.CharField(max_length=120, blank=True, default="Ownership")
     share_possession = models.CharField(max_length=120, blank=True)
     share_percent = models.DecimalField(
@@ -558,12 +583,20 @@ class BuildingLicense(TimeStampedModel):
     license_notes = models.TextField(blank=True)
     
     def get_building_license_file_path(instance, filename):
-        """حفظ ملف رخصة البناء باسم ثابت داخل مجلد المشروع لتفادي إضافة لاحقة."""
-        ext = filename.split('.')[-1] if '.' in filename else 'pdf'
+        """حفظ ملف رخصة البناء في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: رخصة_البناء
+        name, ext = os.path.splitext(filename)
+        ext = ext or '.pdf'
+        clean_filename = f"رخصة_البناء_Building_Permit{ext}"
+        if project:
+            # حفظ مباشرة في Project Info- معلومات المشروع بدون subfolder
+            return get_project_file_path(project, 'project_info', clean_filename)
+        # Fallback للتوافق مع البيانات القديمة
         project_part = instance.project_id or "project"
-        return f"licenses/{project_part}/رخصة_البناء.{ext}"
+        return f"licenses/{project_part}/رخصة_البناء{ext}"
     
-    building_license_file = models.FileField(upload_to=get_building_license_file_path, null=True, blank=True)
+    building_license_file = models.FileField(upload_to=get_building_license_file_path, null=True, blank=True, max_length=500)
 
     # Plot / land data
     city = models.CharField(max_length=120, blank=True)
@@ -665,6 +698,9 @@ class Contract(TimeStampedModel):
     total_bank_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     total_owner_value = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     project_duration_months = models.PositiveIntegerField(default=0)
+    
+    # المساحة الطابقية للمشروع (بالمتر المربع)
+    total_floor_area = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True, help_text="المساحة الطابقية للمشروع بالمتر المربع")
 
     project_end_date = models.DateField(null=True, blank=True)
 
@@ -698,23 +734,219 @@ class Contract(TimeStampedModel):
     # المرفقات الديناميكية
     attachments = models.JSONField(default=list, blank=True, help_text="مرفقات العقد الديناميكية")
     
+    # دوال upload_to للملفات - الهيكل الجديد الموحد
+    def get_contract_file_path(instance, filename):
+        """حفظ ملف العقد الأصيل في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: العقد_الأصيل
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"العقد_الأصيل_Original_Contract{ext}" if ext else "العقد_الأصيل_Original_Contract"
+        if project:
+            # حفظ مباشرة في مجلد contracts - العقود بدون subfolder
+            return get_project_file_path(project, 'contracts', clean_filename)
+        return f"contracts/{clean_filename}"
+    
+    def get_contract_appendix_file_path(instance, filename):
+        """حفظ ملف ملحق العقد في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: ملحق_عقد (بدون رقم)
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"ملحق_عقد_Contract_Addendum{ext}" if ext else "ملحق_عقد_Contract_Addendum"
+        if project:
+            return get_project_file_path(project, 'contracts', clean_filename)
+        return f"contracts/{clean_filename}"
+    
+    def get_contract_explanation_file_path(instance, filename):
+        """حفظ ملف توضيحات العقد في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: توضيحات_تعاقدية (بدون رقم)
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"توضيحات_تعاقدية_Contract_Clarifications{ext}" if ext else "توضيحات_تعاقدية_Contract_Clarifications"
+        if project:
+            return get_project_file_path(project, 'contracts', clean_filename)
+        return f"contracts/{clean_filename}"
+    
+    def get_quantities_table_file_path(instance, filename):
+        """حفظ جدول الكميات في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: جدول_الكميات
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"جدول_الكميات_BOQ{ext}" if ext else "جدول_الكميات_BOQ"
+        if project:
+            return get_project_file_path(project, 'contracts', clean_filename)
+        return f"contracts/{clean_filename}"
+    
+    def get_approved_materials_table_file_path(instance, filename):
+        """حفظ جدول المواد المعتمدة في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: جدول_المواد_المعتمدة
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"جدول_المواد_المعتمدة_Materials_Table{ext}" if ext else "جدول_المواد_المعتمدة_Materials_Table"
+        if project:
+            return get_project_file_path(project, 'contracts', clean_filename)
+        return f"contracts/{clean_filename}"
+    
+    def get_price_offer_file_path(instance, filename):
+        """حفظ عرض السعر في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: عرض_السعر
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"عرض_السعر_Price_Offer{ext}" if ext else "عرض_السعر_Price_Offer"
+        if project:
+            return get_project_file_path(project, 'contracts', clean_filename)
+        return f"contracts/{clean_filename}"
+    
+    def get_mep_drawings_file_path(instance, filename):
+        """حفظ مخططات MEP في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: مخططات_MEP
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"مخططات_MEP{ext}" if ext else "مخططات_MEP"
+        if project:
+            # حفظ مباشرة في مجلد contracts - العقود بدون subfolder
+            return get_project_file_path(project, 'contracts', clean_filename)
+        return f"contracts/{clean_filename}"
+    
+    def get_architectural_drawings_file_path(instance, filename):
+        """حفظ المخططات المعمارية في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: المخططات_المعمارية
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"المخططات_المعمارية_Architectural_Drawings{ext}" if ext else "المخططات_المعمارية_Architectural_Drawings"
+        if project:
+            return get_project_file_path(project, 'contracts', clean_filename, subfolder='مخططات_العقد')
+        return f"contracts/مخططات_العقد/{clean_filename}"
+    
+    def get_structural_drawings_file_path(instance, filename):
+        """حفظ المخططات الإنشائية في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: المخططات_الإنشائية
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"المخططات_الإنشائية_Structural_Drawings{ext}" if ext else "المخططات_الإنشائية_Structural_Drawings"
+        if project:
+            return get_project_file_path(project, 'contracts', clean_filename, subfolder='مخططات_العقد')
+        return f"contracts/مخططات_العقد/{clean_filename}"
+    
+    def get_ac_drawings_file_path(instance, filename):
+        """حفظ مخططات التكييف في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"مخططات_التكييف_AC_Drawings{ext}" if ext else "مخططات_التكييف_AC_Drawings"
+        if project:
+            return get_project_file_path(project, 'contracts', clean_filename, subfolder='مخططات_العقد')
+        return f"contracts/مخططات_العقد/{clean_filename}"
+    
+    def get_electrical_drawings_file_path(instance, filename):
+        """حفظ مخططات الكهرباء في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"مخططات_الكهرباء_Electrical_Drawings{ext}" if ext else "مخططات_الكهرباء_Electrical_Drawings"
+        if project:
+            return get_project_file_path(project, 'contracts', clean_filename, subfolder='مخططات_العقد')
+        return f"contracts/مخططات_العقد/{clean_filename}"
+    
+    def get_water_supply_drawings_file_path(instance, filename):
+        """حفظ مخططات إمداد المياه في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"مخططات_إمداد_المياه_Water_Supply_Drawings{ext}" if ext else "مخططات_إمداد_المياه_Water_Supply_Drawings"
+        if project:
+            return get_project_file_path(project, 'contracts', clean_filename, subfolder='مخططات_العقد')
+        return f"contracts/مخططات_العقد/{clean_filename}"
+    
+    def get_drainage_drawings_file_path(instance, filename):
+        """حفظ مخططات الصرف الصحي في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"مخططات_الصرف_الصحي_Drainage_Drawings{ext}" if ext else "مخططات_الصرف_الصحي_Drainage_Drawings"
+        if project:
+            return get_project_file_path(project, 'contracts', clean_filename, subfolder='مخططات_العقد')
+        return f"contracts/مخططات_العقد/{clean_filename}"
+    
+    def get_telecommunication_drawings_file_path(instance, filename):
+        """حفظ مخططات الاتصالات في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"مخططات_الاتصالات_Telecommunication_Drawings{ext}" if ext else "مخططات_الاتصالات_Telecommunication_Drawings"
+        if project:
+            return get_project_file_path(project, 'contracts', clean_filename, subfolder='مخططات_العقد')
+        return f"contracts/مخططات_العقد/{clean_filename}"
+    
+    def get_fire_fighting_drawings_file_path(instance, filename):
+        """حفظ مخططات مكافحة الحرائق في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"مخططات_مكافحة_الحرائق_Fire_Fighting_Drawings{ext}" if ext else "مخططات_مكافحة_الحرائق_Fire_Fighting_Drawings"
+        if project:
+            return get_project_file_path(project, 'contracts', clean_filename, subfolder='مخططات_العقد')
+        return f"contracts/مخططات_العقد/{clean_filename}"
+    
+    def get_cctv_drawings_file_path(instance, filename):
+        """حفظ مخططات كاميرات المراقبة في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"مخططات_كاميرات_المراقبة_CCTV_Drawings{ext}" if ext else "مخططات_كاميرات_المراقبة_CCTV_Drawings"
+        if project:
+            return get_project_file_path(project, 'contracts', clean_filename, subfolder='مخططات_العقد')
+        return f"contracts/مخططات_العقد/{clean_filename}"
+    
+    def get_decoration_drawings_file_path(instance, filename):
+        """حفظ مخططات الديكور في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: مخططات_الديكور
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"مخططات_الديكور{ext}" if ext else "مخططات_الديكور"
+        if project:
+            # حفظ مباشرة في مجلد contracts - العقود بدون subfolder
+            return get_project_file_path(project, 'contracts', clean_filename)
+        return f"contracts/{clean_filename}"
+    
+    def get_contractual_drawings_file_path(instance, filename):
+        """حفظ المخططات التعاقدية (قديم) في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: المخططات_التعاقدية
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"المخططات_التعاقدية{ext}" if ext else "المخططات_التعاقدية"
+        if project:
+            # حفظ مباشرة في مجلد contracts - العقود بدون subfolder
+            return get_project_file_path(project, 'contracts', clean_filename)
+        return f"contracts/{clean_filename}"
+    
+    def get_general_specifications_file_path(instance, filename):
+        """حفظ المواصفات العامة والخاصة في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: المواصفات_العامة_والخاصة
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"المواصفات_العامة_والخاصة{ext}" if ext else "المواصفات_العامة_والخاصة"
+        if project:
+            # حفظ مباشرة في مجلد contracts - العقود بدون subfolder
+            return get_project_file_path(project, 'contracts', clean_filename)
+        return f"contracts/{clean_filename}"
+    
     # الملفات القديمة (للتوافق مع البيانات الموجودة)
-    contract_file = models.FileField(upload_to="contracts/main/", null=True, blank=True)
-    contract_appendix_file = models.FileField(upload_to="contracts/appendix/", null=True, blank=True)
-    contract_explanation_file = models.FileField(upload_to="contracts/explanations/", null=True, blank=True)
+    contract_file = models.FileField(upload_to=get_contract_file_path, null=True, blank=True, max_length=500)
+    contract_appendix_file = models.FileField(upload_to=get_contract_appendix_file_path, null=True, blank=True, max_length=500)
+    contract_explanation_file = models.FileField(upload_to=get_contract_explanation_file_path, null=True, blank=True, max_length=500)
     
     # ✅ المرفقات الثابتة
-    quantities_table_file = models.FileField(upload_to="contracts/quantities/", null=True, blank=True, help_text="جدول الكميات")
-    approved_materials_table_file = models.FileField(upload_to="contracts/materials/", null=True, blank=True, help_text="جدول المواد المعتمدة")
-    price_offer_file = models.FileField(upload_to="contracts/price_offer/", null=True, blank=True, help_text="عرض السعر")
-    # ✅ المخططات التعاقدية (مقسمة إلى 4 أنواع)
-    mep_drawings_file = models.FileField(upload_to="contracts/drawings/mep/", null=True, blank=True, help_text="مخططات MEP")
-    architectural_drawings_file = models.FileField(upload_to="contracts/drawings/architectural/", null=True, blank=True, help_text="المخططات المعمارية")
-    structural_drawings_file = models.FileField(upload_to="contracts/drawings/structural/", null=True, blank=True, help_text="المخططات الإنشائية")
-    decoration_drawings_file = models.FileField(upload_to="contracts/drawings/decoration/", null=True, blank=True, help_text="مخططات الديكور")
-    # ⚠️ الحقل القديم - سيتم إزالته بعد migration
-    contractual_drawings_file = models.FileField(upload_to="contracts/drawings/", null=True, blank=True, help_text="مخططات تعاقدية (قديم - سيتم إزالته)")
-    general_specifications_file = models.FileField(upload_to="contracts/specifications/", null=True, blank=True, help_text="المواصفات العامة والخاصة")
+    quantities_table_file = models.FileField(upload_to=get_quantities_table_file_path, null=True, blank=True, max_length=500, help_text="جدول الكميات")
+    approved_materials_table_file = models.FileField(upload_to=get_approved_materials_table_file_path, null=True, blank=True, max_length=500, help_text="جدول المواد المعتمدة")
+    price_offer_file = models.FileField(upload_to=get_price_offer_file_path, null=True, blank=True, max_length=500, help_text="عرض السعر")
+    # ✅ المخططات التعاقدية (جميع الأنواع)
+    architectural_drawings_file = models.FileField(upload_to=get_architectural_drawings_file_path, null=True, blank=True, max_length=500, help_text="المخططات المعمارية")
+    structural_drawings_file = models.FileField(upload_to=get_structural_drawings_file_path, null=True, blank=True, max_length=500, help_text="المخططات الإنشائية")
+    ac_drawings_file = models.FileField(upload_to=get_ac_drawings_file_path, null=True, blank=True, max_length=500, help_text="مخططات التكييف")
+    electrical_drawings_file = models.FileField(upload_to=get_electrical_drawings_file_path, null=True, blank=True, max_length=500, help_text="مخططات الكهرباء")
+    water_supply_drawings_file = models.FileField(upload_to=get_water_supply_drawings_file_path, null=True, blank=True, max_length=500, help_text="مخططات إمداد المياه")
+    drainage_drawings_file = models.FileField(upload_to=get_drainage_drawings_file_path, null=True, blank=True, max_length=500, help_text="مخططات الصرف الصحي")
+    telecommunication_drawings_file = models.FileField(upload_to=get_telecommunication_drawings_file_path, null=True, blank=True, max_length=500, help_text="مخططات الاتصالات")
+    fire_fighting_drawings_file = models.FileField(upload_to=get_fire_fighting_drawings_file_path, null=True, blank=True, max_length=500, help_text="مخططات مكافحة الحرائق")
+    cctv_drawings_file = models.FileField(upload_to=get_cctv_drawings_file_path, null=True, blank=True, max_length=500, help_text="مخططات كاميرات المراقبة")
+    # ⚠️ الحقول القديمة - للتوافق مع البيانات الموجودة
+    mep_drawings_file = models.FileField(upload_to=get_mep_drawings_file_path, null=True, blank=True, max_length=500, help_text="مخططات MEP (قديم)")
+    decoration_drawings_file = models.FileField(upload_to=get_decoration_drawings_file_path, null=True, blank=True, max_length=500, help_text="مخططات الديكور (قديم)")
+    contractual_drawings_file = models.FileField(upload_to=get_contractual_drawings_file_path, null=True, blank=True, max_length=500, help_text="مخططات تعاقدية (قديم)")
+    general_specifications_file = models.FileField(upload_to=get_general_specifications_file_path, null=True, blank=True, max_length=500, help_text="المواصفات العامة والخاصة")
 
     def __str__(self):
         return f"Contract for {self.project.name or self.project_id}"
@@ -737,8 +969,19 @@ class Awarding(TimeStampedModel):
     # رقم تسجيل المقاول (VR-xxxx)
     contractor_registration_number = models.CharField(max_length=120, blank=True)
     
+    def get_awarding_file_path(instance, filename):
+        """حفظ ملف أمر الترسية في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: أمر_الترسية
+        name, ext = os.path.splitext(filename)
+        clean_filename = f"أمر_الترسية_Bank_Awarding_Letter{ext}" if ext else "أمر_الترسية_Bank_Awarding_Letter"
+        if project:
+            # حفظ مباشرة في Project Info- معلومات المشروع بدون subfolder
+            return get_project_file_path(project, 'project_info', clean_filename)
+        return f"awarding/{clean_filename}"
+    
     # ملف أمر الترسية
-    awarding_file = models.FileField(upload_to="awarding/", null=True, blank=True)
+    awarding_file = models.FileField(upload_to=get_awarding_file_path, null=True, blank=True)
 
     def __str__(self):
         return f"Awarding for {self.project.name or self.project_id}"
@@ -754,8 +997,25 @@ class StartOrder(TimeStampedModel):
     # ملاحظات أمر المباشرة
     start_order_notes = models.TextField(blank=True, help_text="ملاحظات أمر المباشرة")
     
+    def get_start_order_file_path(instance, filename):
+        """حفظ ملف أمر المباشرة في Project Schedule– المدة الزمنية للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: أمر_المباشرة_Start_Order
+        name, ext = os.path.splitext(filename)
+        ext = ext or '.pdf'
+        clean_filename = f"أمر_المباشرة_Start_Order{ext}"
+        if project:
+            # حفظ في Project Schedule– المدة الزمنية للمشروع
+            # ✅ استخدام get_project_file_path مباشرة مع الاسم الكامل
+            project_folder = get_project_folder_name(project)
+            actual_folder_name = 'Project Schedule– المدة الزمنية للمشروع'
+            # ✅ بناء المسار مباشرة بدون sanitize_filename لأن الاسم نظيف بالفعل
+            file_path = f"projects/{project_folder}/{actual_folder_name}/{clean_filename}"
+            return file_path.replace('\\', '/')
+        return f"start_order/{clean_filename}"
+    
     # ملف أمر المباشرة
-    start_order_file = models.FileField(upload_to="start_orders/", null=True, blank=True)
+    start_order_file = models.FileField(upload_to=get_start_order_file_path, null=True, blank=True, max_length=500)
     
     # التمديدات
     extensions = models.JSONField(
@@ -769,6 +1029,67 @@ class StartOrder(TimeStampedModel):
 
     def __str__(self):
         return f"Start Order for {self.project.name or self.project_id}"
+
+
+# ====== الجدول الزمني للمشروع ======
+class ProjectSchedule(TimeStampedModel):
+    project = models.OneToOneField(Project, on_delete=models.CASCADE, related_name="project_schedule")
+    
+    # تاريخ بداية المشروع
+    project_start_date = models.DateField(null=True, blank=True, help_text="تاريخ بداية المشروع")
+    
+    # تاريخ نهاية المشروع (يتم حسابه تلقائياً)
+    project_end_date = models.DateField(null=True, blank=True, help_text="تاريخ نهاية المشروع (محسوب تلقائياً)")
+    
+    def get_project_schedule_file_path(instance, filename):
+        """حفظ ملف الجدول الزمني في Project Schedule– المدة الزمنية للمشروع (نفس مكان أمر المباشرة)."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: الجدول_الزمني_Project_Schedule
+        name, ext = os.path.splitext(filename)
+        ext = ext or '.pdf'
+        clean_filename = f"الجدول_الزمني_Project_Schedule{ext}"
+        if project:
+            # حفظ في Project Schedule– المدة الزمنية للمشروع (نفس مكان أمر المباشرة)
+            project_folder = get_project_folder_name(project)
+            actual_folder_name = 'Project Schedule– المدة الزمنية للمشروع'
+            file_path = f"projects/{project_folder}/{actual_folder_name}/{clean_filename}"
+            return file_path.replace('\\', '/')
+        return f"project_schedule/{clean_filename}"
+    
+    # ملف الجدول الزمني
+    schedule_file = models.FileField(upload_to=get_project_schedule_file_path, null=True, blank=True, max_length=500, help_text="ملف الجدول الزمني للمشروع")
+    
+    def __str__(self):
+        return f"ProjectSchedule for {self.project.name or self.project_id}"
+
+
+# ====== إشعار بدء الحفر ======
+class ExcavationStartNotice(TimeStampedModel):
+    project = models.OneToOneField(Project, on_delete=models.CASCADE, related_name="excavation_start_notice")
+    
+    # تاريخ إشعار بدء الحفر
+    notice_date = models.DateField(null=True, blank=True, help_text="تاريخ إشعار بدء الحفر")
+    
+    def get_excavation_notice_file_path(instance, filename):
+        """حفظ ملف إشعار بدء الحفر في Project Schedule– المدة الزمنية للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: إشعار_بدء_الحفر_Excavation_Start_Notice
+        name, ext = os.path.splitext(filename)
+        ext = ext or '.pdf'
+        clean_filename = f"إشعار_بدء_الحفر_Excavation_Start_Notice{ext}"
+        if project:
+            # حفظ في Project Schedule– المدة الزمنية للمشروع
+            project_folder = get_project_folder_name(project)
+            actual_folder_name = 'Project Schedule– المدة الزمنية للمشروع'
+            file_path = f"projects/{project_folder}/{actual_folder_name}/{clean_filename}"
+            return file_path.replace('\\', '/')
+        return f"excavation_notice/{clean_filename}"
+    
+    # ملف إشعار بدء الحفر
+    notice_file = models.FileField(upload_to=get_excavation_notice_file_path, null=True, blank=True, max_length=500)
+    
+    def __str__(self):
+        return f"ExcavationStartNotice for {self.project.name or self.project_id}"
 
 
 # ====== أوامر التغيير السعري (Price Change Orders) ======
@@ -785,7 +1106,19 @@ class Variation(TimeStampedModel):
     net_amount = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), help_text="المبلغ الصافي")
     vat = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), help_text="الضريبة")
     net_amount_with_vat = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0'), help_text="المبلغ الصافي بالضريبة")
-    variation_invoice_file = models.FileField(upload_to='variations/invoices/', blank=True, null=True, help_text="فاتورة التعديل")
+    def get_variation_invoice_file_path(instance, filename):
+        """حفظ فاتورة التعديل في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت بناءً على رقم التعديل
+        name, ext = os.path.splitext(filename)
+        variation_number = getattr(instance, 'variation_number', None) or (instance.id if instance.id else '1')
+        clean_filename = f"فاتورة_التعديل_{variation_number}{ext}" if ext else f"فاتورة_التعديل_{variation_number}"
+        if project:
+            project_folder = get_project_folder_name(project)
+            return f"projects/{project_folder}/variation_orders/{clean_filename}"
+        return f"variation_orders/{clean_filename}"
+    
+    variation_invoice_file = models.FileField(upload_to=get_variation_invoice_file_path, blank=True, null=True, help_text="فاتورة التعديل")
     # Legacy fields (kept for backward compatibility)
     amount = models.DecimalField(max_digits=14, decimal_places=2, help_text="المبلغ (legacy - use final_amount)")
     approval_date = models.DateField(null=True, blank=True)
@@ -854,11 +1187,60 @@ class Payment(TimeStampedModel):
     # Bank payment specific fields
     project_financial_account = models.CharField(max_length=100, blank=True, help_text="رقم الحساب المالي للمشروع (يبدأ بـ PRJ)")
     completion_percentage = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, help_text="نسبة الإنجاز")
-    bank_payment_attachments = models.FileField(upload_to='payments/bank_attachments/', blank=True, null=True, help_text="مرفقات دفعة البنك")
+    def get_bank_payment_attachments_path(instance, filename):
+        """حفظ مرفقات دفعة البنك في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: مرفقات_دفعة_البنك
+        name, ext = os.path.splitext(filename)
+        payment_id = instance.id if instance.id else 'new'
+        clean_filename = f"مرفقات_دفعة_البنك_{payment_id}{ext}" if ext else f"مرفقات_دفعة_البنك_{payment_id}"
+        if project:
+            return get_project_file_path(project, 'payments', clean_filename, subfolder='bank_attachments')
+        return f"payments/bank_attachments/{clean_filename}"
+    
+    def get_deposit_slip_path(instance, filename):
+        """حفظ إيصال الإيداع في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: إيصال_الإيداع
+        name, ext = os.path.splitext(filename)
+        payment_id = instance.id if instance.id else 'new'
+        clean_filename = f"إيصال_الإيداع_{payment_id}{ext}" if ext else f"إيصال_الإيداع_{payment_id}"
+        if project:
+            project_folder = get_project_folder_name(project)
+            return f"projects/{project_folder}/payments/payments/{clean_filename}"
+        return f"payments/payments/{clean_filename}"
+    
+    def get_payment_invoice_file_path(instance, filename):
+        """حفظ فاتورة الدفع في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت بناءً على رقم الدفعة
+        name, ext = os.path.splitext(filename)
+        ext = ext or '.pdf'
+        payment_id = instance.id if instance.id else 'new'
+        clean_filename = f"فاتورة_الدفع_{payment_id}{ext}"
+        if project:
+            project_folder = get_project_folder_name(project)
+            return f"projects/{project_folder}/invoices/invoices/{clean_filename}"
+        return f"invoices/invoices/{clean_filename}"
+    
+    def get_receipt_voucher_path(instance, filename):
+        """حفظ سند القبض (إيصال الاستلام) في المسار المنظم للمشروع."""
+        project = get_project_from_instance(instance)
+        # ✅ استخدام اسم ملف ثابت: سند_القبض
+        name, ext = os.path.splitext(filename)
+        ext = ext or '.pdf'
+        payment_id = instance.id if instance.id else 'new'
+        clean_filename = f"سند_القبض_{payment_id}{ext}"
+        if project:
+            project_folder = get_project_folder_name(project)
+            return f"projects/{project_folder}/invoices/receipts/{clean_filename}"
+        return f"invoices/receipts/{clean_filename}"
+    
+    bank_payment_attachments = models.FileField(upload_to=get_bank_payment_attachments_path, blank=True, null=True, help_text="مرفقات دفعة البنك")
     # File attachments
-    deposit_slip = models.FileField(upload_to='payments/deposit_slips/', blank=True, null=True, help_text="Deposit Slip / Bank Deposit Proof")
-    invoice_file = models.FileField(upload_to='payments/invoices/', blank=True, null=True, help_text="Invoice Used for Payment (فاتورة الدفع)")
-    receipt_voucher = models.FileField(upload_to='payments/receipts/', blank=True, null=True, help_text="Receipt Voucher (سند قبض)")
+    deposit_slip = models.FileField(upload_to=get_deposit_slip_path, blank=True, null=True, help_text="Deposit Slip / Bank Deposit Proof")
+    invoice_file = models.FileField(upload_to=get_payment_invoice_file_path, blank=True, null=True, help_text="Invoice Used for Payment (فاتورة الدفع)")
+    receipt_voucher = models.FileField(upload_to=get_receipt_voucher_path, blank=True, null=True, help_text="Receipt Voucher (سند قبض)")
     # Note: actual_invoice is accessed via reverse relationship: payment.actual_invoice
 
     class Meta:

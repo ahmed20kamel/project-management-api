@@ -365,13 +365,29 @@ class TenantSettingsViewSet(viewsets.ModelViewSet):
                         )
                 
                 # ✅ منع تعديل الحقول المحمية (email, subscription info)
-                # نسخ request.data إلى dict قابل للتعديل
-                data_dict = dict(request.data) if hasattr(request.data, 'keys') else request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
+                # معالجة FormData بشكل صحيح
+                from django.http import QueryDict
+                if isinstance(request.data, QueryDict):
+                    # QueryDict: نسخ البيانات مع الحفاظ على الملفات
+                    data_dict = request.data.dict()
+                    # إضافة الملفات بشكل منفصل
+                    if 'company_logo' in request.FILES:
+                        data_dict['company_logo'] = request.FILES['company_logo']
+                    if 'background_image' in request.FILES:
+                        data_dict['background_image'] = request.FILES['background_image']
+                else:
+                    # dict عادي أو JSON
+                    data_dict = dict(request.data) if hasattr(request.data, 'keys') else request.data.copy() if hasattr(request.data, 'copy') else dict(request.data)
+                
+                # حذف الحقول المحمية
                 protected_fields = ['company_email', 'max_users', 'max_projects', 
                                    'subscription_start_date', 'subscription_end_date', 'subscription_status']
                 for field in protected_fields:
                     if field in data_dict:
                         del data_dict[field]
+                
+                # ✅ إزالة الحقول الفارغة (empty strings) لتجنب مشاكل التحقق
+                data_dict = {k: v for k, v in data_dict.items() if v not in [None, '', []]}
                 
                 try:
                     settings = TenantSettings.objects.select_related('tenant').get(tenant=request.user.tenant)
@@ -412,6 +428,14 @@ class TenantSettingsViewSet(viewsets.ModelViewSet):
                     # ✅ إعادة البيانات المحدثة
                     response_serializer = self.get_serializer(instance, context={'request': request})
                     return Response(response_serializer.data)
+                
+                # ✅ تسجيل تفاصيل الأخطاء للتحقق
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"TenantSettings validation errors: {serializer.errors}")
+                logger.error(f"Data sent: {data_dict}")
+                logger.error(f"Current settings: company_name={settings.company_name}, company_email={settings.company_email}, company_phone={settings.company_phone}")
+                
                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
             except Exception as e:
                 import logging
@@ -422,13 +446,24 @@ class TenantSettingsViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
     
-    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
+    @action(detail=False, methods=['get'], permission_classes=[permissions.AllowAny])
     def theme(self, request):
-        """الحصول على Theme الشركة مع caching - متاح لجميع المستخدمين داخل الشركة"""
+        """الحصول على Theme الشركة مع caching - متاح لجميع المستخدمين داخل الشركة أو theme افتراضي للمستخدمين غير المصادقين"""
         import logging
         logger = logging.getLogger(__name__)
         
         try:
+            # ✅ إذا لم يكن المستخدم مصادقاً، نرجع theme افتراضي
+            if not request.user.is_authenticated:
+                return Response({
+                    'tenant_id': None,
+                    'company_name': '',
+                    'logo_url': None,
+                    'background_image_url': None,
+                    'primary_color': '#f97316',
+                    'secondary_color': '#ea580c'
+                })
+            
             # Super Admin لا يحتاج Theme - نرجع theme افتراضي
             if request.user.is_superuser:
                 return Response({

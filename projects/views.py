@@ -17,7 +17,7 @@ from rest_framework.permissions import IsAuthenticated
 
 from .models import (
     Project, SitePlan, SitePlanOwner, BuildingLicense, Contract, Awarding, StartOrder, Payment,
-    Variation, ActualInvoice, Consultant, ProjectConsultant
+    Variation, ActualInvoice, Consultant, ProjectConsultant, ProjectSchedule, ExcavationStartNotice
 )
 from .serializers import (
     ProjectSerializer,
@@ -31,6 +31,8 @@ from .serializers import (
     ActualInvoiceSerializer,
     ConsultantSerializer,
     ProjectConsultantSerializer,
+    ProjectScheduleSerializer,
+    ExcavationStartNoticeSerializer,
 )
 from decimal import Decimal
 from datetime import datetime
@@ -984,6 +986,40 @@ class StartOrderViewSet(_ProjectChildViewSet):
         if hasattr(project, "start_order"):
             return Response(
                 {"detail": "Start Order already exists for this project."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().create(request, *args, **kwargs)
+
+
+# ===============================
+# Project Schedule
+# ===============================
+class ProjectScheduleViewSet(_ProjectChildViewSet):
+    queryset = ProjectSchedule.objects.all().order_by("-created_at")
+    serializer_class = ProjectScheduleSerializer
+
+    def create(self, request, *args, **kwargs):
+        project = self._get_project()
+        if hasattr(project, "project_schedule"):
+            return Response(
+                {"detail": "Project Schedule already exists for this project."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().create(request, *args, **kwargs)
+
+
+# ===============================
+# Excavation Start Notice
+# ===============================
+class ExcavationStartNoticeViewSet(_ProjectChildViewSet):
+    queryset = ExcavationStartNotice.objects.all().order_by("-created_at")
+    serializer_class = ExcavationStartNoticeSerializer
+
+    def create(self, request, *args, **kwargs):
+        project = self._get_project()
+        if hasattr(project, "excavation_start_notice"):
+            return Response(
+                {"detail": "Excavation Start Notice already exists for this project."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return super().create(request, *args, **kwargs)

@@ -15,6 +15,11 @@ def custom_exception_handler(exc, context):
     Custom exception handler for DRF
     Provides consistent error responses and handles CSRF errors gracefully
     """
+    # ✅ تخطي معالجة Django admin views - دع Django يتعامل معها
+    request = context.get('request')
+    if request and request.path.startswith('/admin/'):
+        return None
+    
     # ✅ معالجة CSRF errors بشكل خاص
     if isinstance(exc, PermissionDenied) and 'CSRF' in str(exc):
         logger.warning(f"CSRF verification failed: {exc}")

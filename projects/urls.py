@@ -8,6 +8,8 @@ from .views import (
     ContractViewSet,
     AwardingViewSet,
     StartOrderViewSet,
+    ProjectScheduleViewSet,
+    ExcavationStartNoticeViewSet,
     PaymentViewSet,
     VariationViewSet,
     ActualInvoiceViewSet,
@@ -47,6 +49,18 @@ awarding_detail = AwardingViewSet.as_view(
 # StartOrder ⬇️
 startorder_list = StartOrderViewSet.as_view({"get": "list", "post": "create"})
 startorder_detail = StartOrderViewSet.as_view(
+    {"get": "retrieve", "patch": "partial_update", "delete": "destroy"}
+)
+
+# ProjectSchedule ⬇️
+projectschedule_list = ProjectScheduleViewSet.as_view({"get": "list", "post": "create"})
+projectschedule_detail = ProjectScheduleViewSet.as_view(
+    {"get": "retrieve", "patch": "partial_update", "delete": "destroy"}
+)
+
+# ExcavationStartNotice ⬇️
+excavationnotice_list = ExcavationStartNoticeViewSet.as_view({"get": "list", "post": "create"})
+excavationnotice_detail = ExcavationStartNoticeViewSet.as_view(
     {"get": "retrieve", "patch": "partial_update", "delete": "destroy"}
 )
 
@@ -102,6 +116,14 @@ urlpatterns = [
     # ✅ StartOrder endpoints
     path("projects/<int:project_pk>/start-order/", startorder_list, name="startorder-list"),
     path("projects/<int:project_pk>/start-order/<int:pk>/", startorder_detail, name="startorder-detail"),
+    
+    # ✅ ProjectSchedule endpoints
+    path("projects/<int:project_pk>/project-schedule/", projectschedule_list, name="projectschedule-list"),
+    path("projects/<int:project_pk>/project-schedule/<int:pk>/", projectschedule_detail, name="projectschedule-detail"),
+    
+    # ✅ ExcavationStartNotice endpoints
+    path("projects/<int:project_pk>/excavation-notice/", excavationnotice_list, name="excavationnotice-list"),
+    path("projects/<int:project_pk>/excavation-notice/<int:pk>/", excavationnotice_detail, name="excavationnotice-detail"),
     
     # ✅ Payment endpoints
     path("payments/", payment_list, name="payment-list"),

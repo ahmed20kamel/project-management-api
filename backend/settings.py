@@ -230,8 +230,29 @@ if not DEBUG:
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "/media/"
-MEDIA_ROOT = "/var/data/uploads"
 
+# ✅ Media Root حسب البيئة
+# على Render: إذا كان هناك persistent disk مضبوط على /var/data/uploads، استخدمه
+# في التطوير: استخدم BASE_DIR / "media"
+# يمكن أيضاً تحديد MEDIA_ROOT عبر متغير البيئة MEDIA_ROOT
+MEDIA_ROOT_ENV = os.getenv("MEDIA_ROOT")
+if MEDIA_ROOT_ENV:
+    # إذا تم تحديد MEDIA_ROOT عبر متغير البيئة، استخدمه
+    MEDIA_ROOT = Path(MEDIA_ROOT_ENV)
+elif os.getenv("ENVIRONMENT") == "production":
+    # في الإنتاج: جرب استخدام /var/data/uploads (للديسك المنفصل على Render)
+    # إذا لم يكن موجوداً، استخدم BASE_DIR / "media"
+    persistent_disk_path = Path("/var/data/uploads")
+    if persistent_disk_path.exists() and persistent_disk_path.is_dir():
+        MEDIA_ROOT = persistent_disk_path
+    else:
+        # إذا لم يكن الديسك موجوداً، استخدم BASE_DIR / "media"
+        MEDIA_ROOT = BASE_DIR / "media"
+else:
+    # في التطوير: استخدم BASE_DIR / "media"
+    MEDIA_ROOT = BASE_DIR / "media"
+
+# ✅ إنشاء المجلد إذا لم يكن موجوداً
 os.makedirs(MEDIA_ROOT, exist_ok=True)
 
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
@@ -242,7 +263,10 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # Django REST Framework
 # =========================
 REST_FRAMEWORK = {
-    "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
+    "DEFAULT_RENDERER_CLASSES": [
+        "rest_framework.renderers.JSONRenderer",
+        "rest_framework.renderers.BrowsableAPIRenderer",  # ✅ يسمح بـ HTML rendering عند الحاجة
+    ],
     "DEFAULT_PARSER_CLASSES": ["rest_framework.parsers.JSONParser"],
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework_simplejwt.authentication.JWTAuthentication",
