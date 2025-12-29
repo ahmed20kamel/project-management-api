@@ -42,19 +42,47 @@ def get_company_info(request, tenant_slug):
             'secondary_color': '#ea580c'
         })
     
-    # بناء URL للشعار
+    # ✅ بناء URL للشعار باستخدام /api/files/ بدلاً من /media/
     logo_url = None
     if settings.company_logo:
-        request_scheme = request.scheme
-        request_host = request.get_host()
-        logo_url = f"{request_scheme}://{request_host}{settings.company_logo.url}"
+        try:
+            from projects.serializers import get_file_url
+            file_url = get_file_url(settings.company_logo, None)
+            if file_url:
+                base_url = request.build_absolute_uri('/').rstrip('/')
+                logo_url = f"{base_url}/api/files/{file_url.lstrip('/')}"
+        except Exception:
+            # Fallback: استخدام Django URL
+            django_url = settings.company_logo.url
+            if django_url.startswith('/media/'):
+                relative_path = django_url[7:]
+            elif django_url.startswith('media/'):
+                relative_path = django_url[6:]
+            else:
+                relative_path = django_url.lstrip('/')
+            base_url = request.build_absolute_uri('/').rstrip('/')
+            logo_url = f"{base_url}/api/files/{relative_path}"
     
-    # بناء URL لصورة الخلفية
+    # ✅ بناء URL لصورة الخلفية باستخدام /api/files/ بدلاً من /media/
     background_image_url = None
     if settings.background_image:
-        request_scheme = request.scheme
-        request_host = request.get_host()
-        background_image_url = f"{request_scheme}://{request_host}{settings.background_image.url}"
+        try:
+            from projects.serializers import get_file_url
+            file_url = get_file_url(settings.background_image, None)
+            if file_url:
+                base_url = request.build_absolute_uri('/').rstrip('/')
+                background_image_url = f"{base_url}/api/files/{file_url.lstrip('/')}"
+        except Exception:
+            # Fallback: استخدام Django URL
+            django_url = settings.background_image.url
+            if django_url.startswith('/media/'):
+                relative_path = django_url[7:]
+            elif django_url.startswith('media/'):
+                relative_path = django_url[6:]
+            else:
+                relative_path = django_url.lstrip('/')
+            base_url = request.build_absolute_uri('/').rstrip('/')
+            background_image_url = f"{base_url}/api/files/{relative_path}"
     
     return Response({
         'tenant_id': str(tenant.id),

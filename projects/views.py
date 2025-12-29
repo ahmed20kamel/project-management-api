@@ -1473,6 +1473,7 @@ def download_file(request, file_path):
         response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
         response['Access-Control-Allow-Headers'] = 'authorization, content-type'
         response['Access-Control-Max-Age'] = '86400'  # 24 hours
+        response['Cross-Origin-Resource-Policy'] = 'cross-origin'
         return response
     
     try:
@@ -1624,6 +1625,10 @@ def download_file(request, file_path):
             response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
             response['Access-Control-Allow-Headers'] = 'authorization, content-type'
             response['Access-Control-Expose-Headers'] = 'content-type, content-disposition'
+            
+            # ✅ إضافة Cross-Origin-Resource-Policy لمنع OpaqueResponseBlocking
+            # cross-origin يسمح للصور بالظهور في <img> tags من أي origin
+            response['Cross-Origin-Resource-Policy'] = 'cross-origin'
             
             # ✅ إضافة Cache-Control للتحسين
             response['Cache-Control'] = 'private, max-age=3600'
