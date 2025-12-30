@@ -1486,14 +1486,24 @@ def download_file(request, file_path):
     # ✅ تطبيق الصلاحيات حسب نوع الملف
     if not is_public_file:
         # ✅ الملفات الحساسة تحتاج authentication
-        # ✅ التحقق من وجود Authorization header
-        auth_header = request.headers.get('Authorization', '')
-        has_auth_header = bool(auth_header and auth_header.startswith('Bearer '))
-        
-        # ✅ التحقق من authentication
+        # ✅ @authentication_classes([JWTAuthentication]) يقوم بالمصادقة تلقائياً
+        # ✅ إذا كان request.user.is_authenticated = False، يعني token غير صالح أو غير موجود
         if not request.user or not request.user.is_authenticated:
-            # ✅ إذا لم يكن هناك Authorization header، نعطي رسالة أوضح
-            if not has_auth_header:
+            # ✅ التحقق من وجود Authorization header لإعطاء رسالة أوضح
+            auth_header = request.headers.get('Authorization', '')
+            has_auth_header = bool(auth_header and auth_header.startswith('Bearer '))
+            
+            if has_auth_header:
+                # ✅ يوجد token لكنه غير صالح أو منتهي الصلاحية
+                return Response(
+                    {
+                        "detail": "Authentication credentials were not provided.",
+                        "message": "Invalid or expired authentication token. Please refresh your token or login again."
+                    },
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
+            else:
+                # ✅ لا يوجد token
                 return Response(
                     {
                         "detail": "Authentication credentials were not provided.",
@@ -1501,13 +1511,6 @@ def download_file(request, file_path):
                     },
                     status=status.HTTP_401_UNAUTHORIZED
                 )
-            return Response(
-                {
-                    "detail": "Authentication credentials were not provided.",
-                    "message": "Invalid or expired authentication token. Please refresh your token or login again."
-                },
-                status=status.HTTP_401_UNAUTHORIZED
-            )
     
     # ✅ معالجة OPTIONS requests (CORS preflight)
     if request.method == 'OPTIONS':
