@@ -10,10 +10,11 @@ from pathlib import Path
 import hashlib
 
 from rest_framework import viewsets, status
-from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.decorators import action, api_view, permission_classes, authentication_classes
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from .models import (
     Project, SitePlan, SitePlanOwner, BuildingLicense, Contract, Awarding, StartOrder, Payment,
@@ -1436,6 +1437,7 @@ def _recalculate_project_after_variation_removal(project, removed_net_with_vat):
 # File Download Endpoint (Protected/Public)
 # ===============================
 @api_view(['GET', 'OPTIONS'])
+@authentication_classes([JWTAuthentication])  # ✅ تشغيل JWT authentication حتى لو كان AllowAny
 @permission_classes([AllowAny])  # ✅ AllowAny على مستوى decorator لتجاوز DEFAULT_PERMISSION_CLASSES
 def download_file(request, file_path):
     """
@@ -1509,7 +1511,6 @@ def download_file(request, file_path):
     
     # ✅ معالجة OPTIONS requests (CORS preflight)
     if request.method == 'OPTIONS':
-        from django.conf import settings
         response = Response()
         origin = request.headers.get('Origin')
         
@@ -1660,7 +1661,6 @@ def download_file(request, file_path):
             origin = request.headers.get('Origin')
             
             # ✅ التحقق من CORS_ALLOWED_ORIGINS في settings
-            from django.conf import settings
             if settings.DEBUG:
                 # في التطوير: السماح بأي origin
                 if origin:
