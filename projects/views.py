@@ -1444,6 +1444,29 @@ def download_file(request, file_path):
     - الملفات الحساسة (contracts, projects): IsAuthenticated (تحتاج authentication)
     يستقبل مسار الملف النسبي (مثل: contracts/main/file.pdf أو tenants/logos/logo.png)
     """
+    import logging
+    import urllib.parse
+    import mimetypes
+    
+    logger = logging.getLogger(__name__)
+    
+    # ✅ فك ترميز URL أولاً (للتعامل مع الأحرف العربية والمسارات المرمزة)
+    original_path = file_path
+    try:
+        # ✅ فك ترميز URL (قد يكون مزدوج الترميز في بعض الحالات)
+        decoded_path = urllib.parse.unquote(file_path)
+        # ✅ إذا كان هناك ترميز مزدوج، نحاول فك الترميز مرة أخرى
+        if '%' in decoded_path:
+            decoded_path = urllib.parse.unquote(decoded_path)
+        file_path = decoded_path
+    except Exception as e:
+        logger.warning(f"Failed to decode URL path {original_path}: {e}")
+        # إذا فشل فك الترميز، نستخدم المسار كما هو
+        pass
+    
+    # ✅ تنظيف المسار
+    file_path = file_path.lstrip('/')
+    
     # ✅ تحديد المسارات العامة التي لا تحتاج authentication
     # ✅ يجب أن تتطابق مع المسارات الفعلية في upload_to functions
     public_paths = [
@@ -1455,22 +1478,34 @@ def download_file(request, file_path):
         'avatars/',                 # مسارات بديلة
     ]
     
-    # ✅ التحقق من نوع الملف
+    # ✅ التحقق من نوع الملف (بعد فك الترميز)
     is_public_file = any(file_path.startswith(path) or path in file_path for path in public_paths)
     
     # ✅ تطبيق الصلاحيات حسب نوع الملف
     if not is_public_file:
         # ✅ الملفات الحساسة تحتاج authentication
+        # ✅ التحقق من وجود Authorization header
+        auth_header = request.headers.get('Authorization', '')
+        has_auth_header = bool(auth_header and auth_header.startswith('Bearer '))
+        
+        # ✅ التحقق من authentication
         if not request.user or not request.user.is_authenticated:
+            # ✅ إذا لم يكن هناك Authorization header، نعطي رسالة أوضح
+            if not has_auth_header:
+                return Response(
+                    {
+                        "detail": "Authentication credentials were not provided.",
+                        "message": "This file requires authentication. Please ensure you are logged in and the request includes an Authorization header with a valid Bearer token."
+                    },
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
             return Response(
-                {"detail": "Authentication credentials were not provided."},
+                {
+                    "detail": "Authentication credentials were not provided.",
+                    "message": "Invalid or expired authentication token. Please refresh your token or login again."
+                },
                 status=status.HTTP_401_UNAUTHORIZED
             )
-    import logging
-    import urllib.parse
-    import mimetypes
-    
-    logger = logging.getLogger(__name__)
     
     # ✅ معالجة OPTIONS requests (CORS preflight)
     if request.method == 'OPTIONS':
