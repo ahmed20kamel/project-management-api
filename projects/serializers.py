@@ -23,6 +23,33 @@ logger = logging.getLogger(__name__)
 # =========================
 # Helper Functions - Unified File URL Handling
 # =========================
+def get_file_name(file_field):
+    """
+    دالة موحدة لاستخراج اسم الملف الموحد من file_field
+    ترجع اسم الملف كما هو محفوظ في قاعدة البيانات (من upload_to function)
+    
+    Args:
+        file_field: Django FileField أو ImageField
+    
+    Returns:
+        str: اسم الملف الموحد (مثل: مخطط_الأرض_Site_Plan.pdf)
+    """
+    if not file_field:
+        return None
+    
+    try:
+        # ✅ الحصول على اسم الملف من file_field.name
+        if hasattr(file_field, 'name') and file_field.name:
+            # ✅ استخراج اسم الملف فقط (بدون المسار)
+            import os
+            file_name = os.path.basename(file_field.name)
+            return file_name
+    except Exception as e:
+        logger.warning(f"Error getting file name: {e}", exc_info=True)
+    
+    return None
+
+
 def get_file_url(file_field, request=None):
     """
     دالة موحدة لإرجاع URL الملف بشكل متسق
@@ -631,8 +658,14 @@ class SitePlanOwnerSerializer(serializers.ModelSerializer):
                 data["is_authorized"] = instance.is_authorized if hasattr(instance, 'is_authorized') else False
             
             # ✅ استخدام الدالة الموحدة لـ id_attachment
-            if "id_attachment" in data:
-                data["id_attachment"] = get_file_url(getattr(instance, 'id_attachment', None))
+            id_attachment = getattr(instance, 'id_attachment', None)
+            if id_attachment:
+                data["id_attachment"] = get_file_url(id_attachment)
+                # ✅ إضافة اسم الملف الموحد
+                data["id_attachment_name"] = get_file_name(id_attachment)
+            else:
+                data["id_attachment"] = None
+                data["id_attachment_name"] = None
             
             return data
         except Exception as e:
@@ -748,8 +781,14 @@ class SitePlanSerializer(serializers.ModelSerializer):
             data = super().to_representation(instance)
             
             # ✅ استخدام الدالة الموحدة لـ application_file
-            if "application_file" in data:
-                data["application_file"] = get_file_url(getattr(instance, 'application_file', None))
+            application_file = getattr(instance, 'application_file', None)
+            if application_file:
+                data["application_file"] = get_file_url(application_file)
+                # ✅ إضافة اسم الملف الموحد
+                data["application_file_name"] = get_file_name(application_file)
+            else:
+                data["application_file"] = None
+                data["application_file_name"] = None
             
             # ✅ معالجة آمنة للملاك
             if "owners" in data and isinstance(data["owners"], list):
@@ -1400,6 +1439,13 @@ class BuildingLicenseSerializer(serializers.ModelSerializer):
             except TenantSettings.DoesNotExist:
                 pass  # إذا لم تكن هناك إعدادات، نكمل بدون ملء البيانات
         
+        # ✅ إضافة اسم الملف الموحد لـ building_license_file
+        building_license_file = getattr(instance, 'building_license_file', None)
+        if building_license_file:
+            representation['building_license_file_name'] = get_file_name(building_license_file)
+        else:
+            representation['building_license_file_name'] = None
+        
         return representation
 
     def to_internal_value(self, data):
@@ -1942,6 +1988,53 @@ class ContractSerializer(serializers.ModelSerializer):
             except TenantSettings.DoesNotExist:
                 pass  # إذا لم تكن هناك إعدادات، نكمل بدون ملء البيانات
         
+        # ✅ إضافة أسماء الملفات الموحدة لجميع ملفات Contract
+        contract_file = getattr(instance, 'contract_file', None)
+        representation['contract_file_name'] = get_file_name(contract_file) if contract_file else None
+        
+        contract_appendix_file = getattr(instance, 'contract_appendix_file', None)
+        representation['contract_appendix_file_name'] = get_file_name(contract_appendix_file) if contract_appendix_file else None
+        
+        contract_explanation_file = getattr(instance, 'contract_explanation_file', None)
+        representation['contract_explanation_file_name'] = get_file_name(contract_explanation_file) if contract_explanation_file else None
+        
+        quantities_table_file = getattr(instance, 'quantities_table_file', None)
+        representation['quantities_table_file_name'] = get_file_name(quantities_table_file) if quantities_table_file else None
+        
+        approved_materials_table_file = getattr(instance, 'approved_materials_table_file', None)
+        representation['approved_materials_table_file_name'] = get_file_name(approved_materials_table_file) if approved_materials_table_file else None
+        
+        price_offer_file = getattr(instance, 'price_offer_file', None)
+        representation['price_offer_file_name'] = get_file_name(price_offer_file) if price_offer_file else None
+        
+        # ✅ المخططات التعاقدية
+        architectural_drawings_file = getattr(instance, 'architectural_drawings_file', None)
+        representation['architectural_drawings_file_name'] = get_file_name(architectural_drawings_file) if architectural_drawings_file else None
+        
+        structural_drawings_file = getattr(instance, 'structural_drawings_file', None)
+        representation['structural_drawings_file_name'] = get_file_name(structural_drawings_file) if structural_drawings_file else None
+        
+        ac_drawings_file = getattr(instance, 'ac_drawings_file', None)
+        representation['ac_drawings_file_name'] = get_file_name(ac_drawings_file) if ac_drawings_file else None
+        
+        electrical_drawings_file = getattr(instance, 'electrical_drawings_file', None)
+        representation['electrical_drawings_file_name'] = get_file_name(electrical_drawings_file) if electrical_drawings_file else None
+        
+        water_supply_drawings_file = getattr(instance, 'water_supply_drawings_file', None)
+        representation['water_supply_drawings_file_name'] = get_file_name(water_supply_drawings_file) if water_supply_drawings_file else None
+        
+        drainage_drawings_file = getattr(instance, 'drainage_drawings_file', None)
+        representation['drainage_drawings_file_name'] = get_file_name(drainage_drawings_file) if drainage_drawings_file else None
+        
+        telecommunication_drawings_file = getattr(instance, 'telecommunication_drawings_file', None)
+        representation['telecommunication_drawings_file_name'] = get_file_name(telecommunication_drawings_file) if telecommunication_drawings_file else None
+        
+        fire_fighting_drawings_file = getattr(instance, 'fire_fighting_drawings_file', None)
+        representation['fire_fighting_drawings_file_name'] = get_file_name(fire_fighting_drawings_file) if fire_fighting_drawings_file else None
+        
+        cctv_drawings_file = getattr(instance, 'cctv_drawings_file', None)
+        representation['cctv_drawings_file_name'] = get_file_name(cctv_drawings_file) if cctv_drawings_file else None
+        
         # ✅ تنظيف أسماء الملفات في attachments لإزالة الأرقام العشوائية
         if 'attachments' in representation and isinstance(representation['attachments'], list):
             cleaned_attachments = []
@@ -2313,6 +2406,16 @@ class AwardingSerializer(serializers.ModelSerializer):
             "created_at", "updated_at",
         ]
         read_only_fields = ["project", "created_at", "updated_at"]
+    
+    def to_representation(self, instance):
+        """إضافة اسم الملف الموحد لـ awarding_file"""
+        data = super().to_representation(instance)
+        awarding_file = getattr(instance, 'awarding_file', None)
+        if awarding_file:
+            data["awarding_file_name"] = get_file_name(awarding_file)
+        else:
+            data["awarding_file_name"] = None
+        return data
 
 
 # =========================
@@ -2334,6 +2437,16 @@ class StartOrderSerializer(serializers.ModelSerializer):
             "created_at", "updated_at",
         ]
         read_only_fields = ["project", "project_end_date", "created_at", "updated_at"]
+    
+    def to_representation(self, instance):
+        """إضافة اسم الملف الموحد لـ start_order_file"""
+        data = super().to_representation(instance)
+        start_order_file = getattr(instance, 'start_order_file', None)
+        if start_order_file:
+            data["start_order_file_name"] = get_file_name(start_order_file)
+        else:
+            data["start_order_file_name"] = None
+        return data
     
     def _calculate_project_end_date(self, start_order_date, extensions, project):
         """حساب تاريخ نهاية المشروع بناءً على start_order_date + project_duration_months + extensions"""
@@ -2641,6 +2754,16 @@ class ProjectScheduleSerializer(serializers.ModelSerializer):
         fields = ['id', 'project_start_date', 'project_end_date', 'schedule_file', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at', 'project_end_date']
     
+    def to_representation(self, instance):
+        """إضافة اسم الملف الموحد لـ schedule_file"""
+        data = super().to_representation(instance)
+        schedule_file = getattr(instance, 'schedule_file', None)
+        if schedule_file:
+            data["schedule_file_name"] = get_file_name(schedule_file)
+        else:
+            data["schedule_file_name"] = None
+        return data
+    
     def create(self, validated_data):
         """إنشاء ProjectSchedule مع حساب project_end_date تلقائياً"""
         project = validated_data.get("project")
@@ -2756,9 +2879,10 @@ class ExcavationStartNoticeSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at']
     
     def get_notice_file_name(self, obj):
-        """الحصول على اسم ملف إشعار بدء الحفر"""
-        if obj.notice_file:
-            return obj.notice_file.name.split('/')[-1]
+        """الحصول على اسم ملف إشعار بدء الحفر الموحد"""
+        notice_file = getattr(obj, 'notice_file', None)
+        if notice_file:
+            return get_file_name(notice_file)
         return None
     
     def update(self, instance, validated_data):
@@ -2837,7 +2961,8 @@ class VariationSerializer(serializers.ModelSerializer):
     def get_variation_invoice_file(self, obj):
         """الحصول على رابط ملف فاتورة التعديل"""
         try:
-            url = get_file_url(getattr(obj, 'variation_invoice_file', None))
+            variation_invoice_file = getattr(obj, 'variation_invoice_file', None)
+            url = get_file_url(variation_invoice_file)
             if url and self.context.get('request'):
                 request = self.context.get('request')
                 return request.build_absolute_uri(f"/api/files/{url}")
@@ -2845,6 +2970,16 @@ class VariationSerializer(serializers.ModelSerializer):
         except Exception as e:
             logger.warning(f"Error getting variation_invoice_file for Variation {obj.id}: {e}")
             return None
+    
+    def to_representation(self, instance):
+        """إضافة اسم الملف الموحد لـ variation_invoice_file"""
+        data = super().to_representation(instance)
+        variation_invoice_file = getattr(instance, 'variation_invoice_file', None)
+        if variation_invoice_file:
+            data["variation_invoice_file_name"] = get_file_name(variation_invoice_file)
+        else:
+            data["variation_invoice_file_name"] = None
+        return data
     
     def create(self, validated_data):
         """Auto-generate variation_number if not provided and calculate consultant_fees from percentage"""
@@ -3015,7 +3150,8 @@ class PaymentSerializer(serializers.ModelSerializer):
     def get_deposit_slip(self, obj):
         """الحصول على رابط Deposit Slip"""
         try:
-            url = get_file_url(getattr(obj, 'deposit_slip', None))
+            deposit_slip = getattr(obj, 'deposit_slip', None)
+            url = get_file_url(deposit_slip)
             if url and self.context.get('request'):
                 return self.context.get('request').build_absolute_uri(f"/api/files/{url}")
             return url
@@ -3026,7 +3162,8 @@ class PaymentSerializer(serializers.ModelSerializer):
     def get_invoice_file(self, obj):
         """الحصول على رابط Invoice File"""
         try:
-            url = get_file_url(getattr(obj, 'invoice_file', None))
+            invoice_file = getattr(obj, 'invoice_file', None)
+            url = get_file_url(invoice_file)
             if url and self.context.get('request'):
                 return self.context.get('request').build_absolute_uri(f"/api/files/{url}")
             return url
@@ -3037,13 +3174,33 @@ class PaymentSerializer(serializers.ModelSerializer):
     def get_receipt_voucher(self, obj):
         """الحصول على رابط Receipt Voucher"""
         try:
-            url = get_file_url(getattr(obj, 'receipt_voucher', None))
+            receipt_voucher = getattr(obj, 'receipt_voucher', None)
+            url = get_file_url(receipt_voucher)
             if url and self.context.get('request'):
                 return self.context.get('request').build_absolute_uri(f"/api/files/{url}")
             return url
         except Exception as e:
             logger.warning(f"Error getting receipt_voucher for Payment {obj.id}: {e}")
             return None
+    
+    def to_representation(self, instance):
+        """إضافة أسماء الملفات الموحدة لجميع ملفات Payment"""
+        data = super().to_representation(instance)
+        
+        # ✅ إضافة أسماء الملفات الموحدة
+        deposit_slip = getattr(instance, 'deposit_slip', None)
+        data["deposit_slip_name"] = get_file_name(deposit_slip) if deposit_slip else None
+        
+        invoice_file = getattr(instance, 'invoice_file', None)
+        data["invoice_file_name"] = get_file_name(invoice_file) if invoice_file else None
+        
+        receipt_voucher = getattr(instance, 'receipt_voucher', None)
+        data["receipt_voucher_name"] = get_file_name(receipt_voucher) if receipt_voucher else None
+        
+        bank_payment_attachments = getattr(instance, 'bank_payment_attachments', None)
+        data["bank_payment_attachments_name"] = get_file_name(bank_payment_attachments) if bank_payment_attachments else None
+        
+        return data
     
     def get_bank_payment_attachments(self, obj):
         """الحصول على رابط Bank Payment Attachments"""

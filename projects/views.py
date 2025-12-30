@@ -13,7 +13,7 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 
 from .models import (
     Project, SitePlan, SitePlanOwner, BuildingLicense, Contract, Awarding, StartOrder, Payment,
@@ -1436,6 +1436,7 @@ def _recalculate_project_after_variation_removal(project, removed_net_with_vat):
 # File Download Endpoint (Protected/Public)
 # ===============================
 @api_view(['GET', 'OPTIONS'])
+@permission_classes([AllowAny])  # ✅ AllowAny على مستوى decorator لتجاوز DEFAULT_PERMISSION_CLASSES
 def download_file(request, file_path):
     """
     Endpoint لتحميل الملفات
@@ -1444,13 +1445,14 @@ def download_file(request, file_path):
     يستقبل مسار الملف النسبي (مثل: contracts/main/file.pdf أو tenants/logos/logo.png)
     """
     # ✅ تحديد المسارات العامة التي لا تحتاج authentication
+    # ✅ يجب أن تتطابق مع المسارات الفعلية في upload_to functions
     public_paths = [
-        'tenants/logos/',
-        'tenants/backgrounds/',
-        'users/avatars/',
-        'company_logos/',
-        'background_images/',
-        'avatars/',
+        'tenants/logos/',           # من TenantSettings.company_logo
+        'tenants/backgrounds/',     # من TenantSettings.background_image
+        'users/avatars/',           # من User.avatar
+        'company_logos/',           # مسارات بديلة
+        'background_images/',       # مسارات بديلة
+        'avatars/',                 # مسارات بديلة
     ]
     
     # ✅ التحقق من نوع الملف

@@ -396,24 +396,20 @@ class SitePlanOwner(TimeStampedModel):
     def get_id_attachment_path(instance, filename):
         """حفظ ملف بطاقة الهوية في Project Info- معلومات المشروع."""
         project = get_project_from_instance(instance)
+        name, ext = os.path.splitext(filename)
+        ext = ext or '.pdf'
+        # ✅ استخدام اسم ملف موحد: بطاقة_الهوية_ID_Card (بدون أرقام عشوائية)
+        # ✅ التمييز بين المالك والمفوض
+        is_authorized = getattr(instance, 'is_authorized', False)
+        if is_authorized:
+            clean_filename = f"بطاقة_الهوية_المفوض_Authorized_Owner_ID_Card{ext}"
+        else:
+            clean_filename = f"بطاقة_الهوية_Owner_ID_Card{ext}"
         if project:
-            owner_index = getattr(instance, '_owner_index', instance.id if instance.id else 1)
-            # استخدام اسم ملف قصير ومنظم
-            name, ext = os.path.splitext(filename)
-            # تقصير اسم الملف لتجنب مشاكل max_length
-            # ✅ استخدام اسم ملف يميز بين المالك والمفوض
-            is_authorized = getattr(instance, 'is_authorized', False)
-            if is_authorized:
-                clean_filename = f"id_authorized_{owner_index}{ext}" if ext else f"id_authorized_{owner_index}"
-            else:
-                clean_filename = f"id_owner_{owner_index}{ext}" if ext else f"id_owner_{owner_index}"
             # حفظ مباشرة في Project Info- معلومات المشروع بدون subfolder
             return get_project_file_path(project, 'project_info', clean_filename)
         # Fallback للتوافق مع البيانات القديمة
-        ext = filename.split('.')[-1] if '.' in filename else 'pdf'
-        owner_index = getattr(instance, '_owner_index', instance.id if instance.id else 1)
-        siteplan_part = instance.siteplan_id or "siteplan"
-        return f"siteplan/{siteplan_part}/بطاقة_الهوية_{owner_index}.{ext}"
+        return f"siteplan/بطاقة_الهوية_ID_Card{ext}"
     
     id_attachment = models.FileField(upload_to=get_id_attachment_path, null=True, blank=True, max_length=500)
     right_hold_type = models.CharField(max_length=120, blank=True, default="Ownership")
@@ -1110,10 +1106,10 @@ class Variation(TimeStampedModel):
     def get_variation_invoice_file_path(instance, filename):
         """حفظ فاتورة التعديل في المسار المنظم للمشروع."""
         project = get_project_from_instance(instance)
-        # ✅ استخدام اسم ملف ثابت بناءً على رقم التعديل
+        # ✅ استخدام اسم ملف موحد: فاتورة_التعديل_Variation_Invoice (بدون أرقام عشوائية)
         name, ext = os.path.splitext(filename)
-        variation_number = getattr(instance, 'variation_number', None) or (instance.id if instance.id else '1')
-        clean_filename = f"فاتورة_التعديل_{variation_number}{ext}" if ext else f"فاتورة_التعديل_{variation_number}"
+        ext = ext or '.pdf'
+        clean_filename = f"فاتورة_التعديل_Variation_Invoice{ext}"
         if project:
             project_folder = get_project_folder_name(project)
             return f"projects/{project_folder}/variation_orders/{clean_filename}"
@@ -1191,10 +1187,10 @@ class Payment(TimeStampedModel):
     def get_bank_payment_attachments_path(instance, filename):
         """حفظ مرفقات دفعة البنك في المسار المنظم للمشروع."""
         project = get_project_from_instance(instance)
-        # ✅ استخدام اسم ملف ثابت: مرفقات_دفعة_البنك
+        # ✅ استخدام اسم ملف موحد: مرفقات_دفعة_البنك_Bank_Payment_Attachments (بدون أرقام عشوائية)
         name, ext = os.path.splitext(filename)
-        payment_id = instance.id if instance.id else 'new'
-        clean_filename = f"مرفقات_دفعة_البنك_{payment_id}{ext}" if ext else f"مرفقات_دفعة_البنك_{payment_id}"
+        ext = ext or '.pdf'
+        clean_filename = f"مرفقات_دفعة_البنك_Bank_Payment_Attachments{ext}"
         if project:
             return get_project_file_path(project, 'payments', clean_filename, subfolder='bank_attachments')
         return f"payments/bank_attachments/{clean_filename}"
@@ -1202,10 +1198,10 @@ class Payment(TimeStampedModel):
     def get_deposit_slip_path(instance, filename):
         """حفظ إيصال الإيداع في المسار المنظم للمشروع."""
         project = get_project_from_instance(instance)
-        # ✅ استخدام اسم ملف ثابت: إيصال_الإيداع
+        # ✅ استخدام اسم ملف موحد: إيصال_الإيداع_Deposit_Slip (بدون أرقام عشوائية)
         name, ext = os.path.splitext(filename)
-        payment_id = instance.id if instance.id else 'new'
-        clean_filename = f"إيصال_الإيداع_{payment_id}{ext}" if ext else f"إيصال_الإيداع_{payment_id}"
+        ext = ext or '.pdf'
+        clean_filename = f"إيصال_الإيداع_Deposit_Slip{ext}"
         if project:
             project_folder = get_project_folder_name(project)
             return f"projects/{project_folder}/payments/payments/{clean_filename}"
@@ -1214,11 +1210,10 @@ class Payment(TimeStampedModel):
     def get_payment_invoice_file_path(instance, filename):
         """حفظ فاتورة الدفع في المسار المنظم للمشروع."""
         project = get_project_from_instance(instance)
-        # ✅ استخدام اسم ملف ثابت بناءً على رقم الدفعة
+        # ✅ استخدام اسم ملف موحد: فاتورة_الدفع_Payment_Invoice (بدون أرقام عشوائية)
         name, ext = os.path.splitext(filename)
         ext = ext or '.pdf'
-        payment_id = instance.id if instance.id else 'new'
-        clean_filename = f"فاتورة_الدفع_{payment_id}{ext}"
+        clean_filename = f"فاتورة_الدفع_Payment_Invoice{ext}"
         if project:
             project_folder = get_project_folder_name(project)
             return f"projects/{project_folder}/invoices/invoices/{clean_filename}"
@@ -1227,11 +1222,10 @@ class Payment(TimeStampedModel):
     def get_receipt_voucher_path(instance, filename):
         """حفظ سند القبض (إيصال الاستلام) في المسار المنظم للمشروع."""
         project = get_project_from_instance(instance)
-        # ✅ استخدام اسم ملف ثابت: سند_القبض
+        # ✅ استخدام اسم ملف موحد: سند_القبض_Receipt_Voucher (بدون أرقام عشوائية)
         name, ext = os.path.splitext(filename)
         ext = ext or '.pdf'
-        payment_id = instance.id if instance.id else 'new'
-        clean_filename = f"سند_القبض_{payment_id}{ext}"
+        clean_filename = f"سند_القبض_Receipt_Voucher{ext}"
         if project:
             project_folder = get_project_folder_name(project)
             return f"projects/{project_folder}/invoices/receipts/{clean_filename}"
