@@ -1144,7 +1144,34 @@ class SitePlanSerializer(serializers.ModelSerializer):
 
         owners_data = [od for od in owners_data if self._has_name(od)]
 
+        # ✅ استخراج ملف المعاملة (application_file) قبل إنشاء الـ instance
+        file_obj = validated_data.pop("application_file", None)
+
         siteplan = SitePlan.objects.create(**validated_data)
+        
+        # ✅ حفظ ملف application_file مباشرة بعد إنشاء instance
+        if file_obj and isinstance(file_obj, (InMemoryUploadedFile, UploadedFile)):
+            try:
+                from .utils import save_project_file
+                project = siteplan.project
+                # ✅ استخدام اسم ملف ثابت بدون suffix مع overwrite=True
+                saved_path = save_project_file(
+                    file_obj,
+                    project,
+                    'project_info',
+                    filename='مخطط_الأرض_Site_Plan.pdf',  # اسم ثابت
+                    overwrite=True  # ✅ حذف الملف القديم أولاً
+                )
+                # ✅ تحديث siteplan.application_file بالمسار المحفوظ
+                siteplan.application_file = saved_path
+                siteplan.save(update_fields=['application_file'])
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Error saving application_file in create: {e}", exc_info=True)
+                # Fallback: استخدام الطريقة العادية
+                siteplan.application_file = file_obj
+                siteplan.save(update_fields=['application_file'])
         
         # ✅ حفظ الملاك بشكل صحيح
         for idx, od in enumerate(owners_data):
@@ -1199,14 +1226,41 @@ class SitePlanSerializer(serializers.ModelSerializer):
         # -----------------------------
         # 2) التعامل مع ملف المعاملة (application_file)
         # -----------------------------
-        file_obj = validated_data.get("application_file")
+        file_obj = validated_data.pop("application_file", None)
         if file_obj and isinstance(file_obj, (InMemoryUploadedFile, UploadedFile)):
-            # حذف الملف السابق لتجنب إضافة لاحقة على الاسم
+            # ✅ حذف الملف السابق أولاً لتجنب إضافة suffix عشوائي
             if instance.application_file:
                 try:
+                    old_file_path = instance.application_file.name
                     instance.application_file.delete(save=False)
+                    # ✅ حذف الملف من storage أيضاً
+                    try:
+                        from django.core.files.storage import default_storage
+                        if default_storage.exists(old_file_path):
+                            default_storage.delete(old_file_path)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
+            
+            # ✅ حفظ الملف مباشرة باستخدام save_project_file لتجنب suffix عشوائي
+            try:
+                from .utils import save_project_file
+                project = instance.project
+                # ✅ استخدام اسم ملف ثابت بدون suffix مع overwrite=True
+                saved_path = save_project_file(
+                    file_obj,
+                    project,
+                    'project_info',
+                    filename='مخطط_الأرض_Site_Plan.pdf',  # اسم ثابت
+                    overwrite=True  # ✅ حذف الملف القديم أولاً
+                )
+                # ✅ تحديث instance.application_file بالمسار المحفوظ
+                instance.application_file = saved_path
+            except Exception as e:
+                logger.error(f"Error saving application_file: {e}", exc_info=True)
+                # Fallback: استخدام الطريقة العادية
+                instance.application_file = file_obj
 
         # -----------------------------
         # 3) تحديث حقول الـ SitePlan

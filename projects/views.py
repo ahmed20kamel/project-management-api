@@ -1452,15 +1452,47 @@ def download_file(request, file_path):
     
     logger = logging.getLogger(__name__)
     
+    # ✅ معالجة OPTIONS requests (CORS preflight) أولاً - قبل أي معالجة أخرى
+    if request.method == 'OPTIONS':
+        response = Response()
+        origin = request.headers.get('Origin')
+        
+        if settings.DEBUG:
+            if origin:
+                response['Access-Control-Allow-Origin'] = origin
+            else:
+                response['Access-Control-Allow-Origin'] = '*'
+        else:
+            if origin and origin in settings.CORS_ALLOWED_ORIGINS:
+                response['Access-Control-Allow-Origin'] = origin
+            elif settings.CORS_ALLOW_ALL_ORIGINS:
+                response['Access-Control-Allow-Origin'] = origin or '*'
+            elif settings.CORS_ALLOWED_ORIGINS:
+                response['Access-Control-Allow-Origin'] = settings.CORS_ALLOWED_ORIGINS[0]
+        
+        response['Access-Control-Allow-Credentials'] = 'true'
+        response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        response['Access-Control-Allow-Headers'] = 'authorization, content-type'
+        response['Access-Control-Max-Age'] = '86400'  # 24 hours
+        response['Cross-Origin-Resource-Policy'] = 'cross-origin'
+        return response
+    
     # ✅ فك ترميز URL أولاً (للتعامل مع الأحرف العربية والمسارات المرمزة)
     original_path = file_path
     try:
-        # ✅ فك ترميز URL (قد يكون مزدوج الترميز في بعض الحالات)
-        decoded_path = urllib.parse.unquote(file_path)
-        # ✅ إذا كان هناك ترميز مزدوج، نحاول فك الترميز مرة أخرى
-        if '%' in decoded_path:
+        # ✅ فك ترميز URL بشكل متكرر حتى لا يبقى أي ترميز (للتعامل مع الترميز المزدوج أو المتعدد)
+        decoded_path = file_path
+        max_decode_iterations = 5  # حد أقصى لعدد مرات فك الترميز
+        for _ in range(max_decode_iterations):
+            if '%' not in decoded_path:
+                break
+            prev_decoded = decoded_path
             decoded_path = urllib.parse.unquote(decoded_path)
+            # إذا لم يتغير المسار بعد فك الترميز، نتوقف
+            if prev_decoded == decoded_path:
+                break
         file_path = decoded_path
+        logger.debug(f"Decoded path: {original_path} -> {file_path}")
     except Exception as e:
         logger.warning(f"Failed to decode URL path {original_path}: {e}")
         # إذا فشل فك الترميز، نستخدم المسار كما هو
@@ -1495,6 +1527,7 @@ def download_file(request, file_path):
             
             if has_auth_header:
                 # ✅ يوجد token لكنه غير صالح أو منتهي الصلاحية
+                logger.warning(f"❌ Authentication failed for file: {file_path}. Token present but invalid.")
                 return Response(
                     {
                         "detail": "Authentication credentials were not provided.",
@@ -1504,6 +1537,7 @@ def download_file(request, file_path):
                 )
             else:
                 # ✅ لا يوجد token
+                logger.warning(f"❌ No authentication token for file: {file_path}")
                 return Response(
                     {
                         "detail": "Authentication credentials were not provided.",
@@ -1512,42 +1546,10 @@ def download_file(request, file_path):
                     status=status.HTTP_401_UNAUTHORIZED
                 )
     
-    # ✅ معالجة OPTIONS requests (CORS preflight)
-    if request.method == 'OPTIONS':
-        response = Response()
-        origin = request.headers.get('Origin')
-        
-        if settings.DEBUG:
-            if origin:
-                response['Access-Control-Allow-Origin'] = origin
-            else:
-                response['Access-Control-Allow-Origin'] = '*'
-        else:
-            if origin and origin in settings.CORS_ALLOWED_ORIGINS:
-                response['Access-Control-Allow-Origin'] = origin
-            elif settings.CORS_ALLOW_ALL_ORIGINS:
-                response['Access-Control-Allow-Origin'] = origin or '*'
-            elif settings.CORS_ALLOWED_ORIGINS:
-                response['Access-Control-Allow-Origin'] = settings.CORS_ALLOWED_ORIGINS[0]
-        
-        response['Access-Control-Allow-Credentials'] = 'true'
-        response['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-        response['Access-Control-Allow-Headers'] = 'authorization, content-type'
-        response['Access-Control-Max-Age'] = '86400'  # 24 hours
-        response['Cross-Origin-Resource-Policy'] = 'cross-origin'
-        return response
-    
     try:
         # ✅ تنظيف المسار لمنع directory traversal attacks
-        original_path = file_path
+        # (تم تنظيفه بالفعل أعلاه، لكن نعيد التأكد)
         file_path = file_path.lstrip('/')
-        
-        # ✅ فك ترميز URL (للتعامل مع الأحرف العربية)
-        try:
-            file_path = urllib.parse.unquote(file_path)
-        except Exception as e:
-            logger.warning(f"Failed to decode URL path {original_path}: {e}")
-            pass  # إذا فشل فك الترميز، نستخدم المسار كما هو
         
         # ✅ منع directory traversal
         if '..' in file_path:

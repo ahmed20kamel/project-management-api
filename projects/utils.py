@@ -258,7 +258,7 @@ def get_project_file_path(project, phase, filename, subfolder=None):
     return file_path
 
 
-def save_project_file(file_obj, project, phase, filename=None, subfolder=None):
+def save_project_file(file_obj, project, phase, filename=None, subfolder=None, overwrite=False):
     """
     حفظ ملف في المسار المنظم للمشروع
     
@@ -268,6 +268,7 @@ def save_project_file(file_obj, project, phase, filename=None, subfolder=None):
         phase: مرحلة المشروع
         filename: اسم الملف (اختياري، سيستخدم اسم الملف الأصلي إذا لم يُحدد)
         subfolder: مجلد فرعي داخل المرحلة (اختياري)
+        overwrite: إذا كان True، يحذف الملف القديم بنفس الاسم قبل الحفظ (لتجنب suffix عشوائي)
     
     Returns:
         str: المسار المحفوظ للملف
@@ -282,6 +283,15 @@ def save_project_file(file_obj, project, phase, filename=None, subfolder=None):
     
     # الحصول على المسار
     file_path = get_project_file_path(project, phase, filename, subfolder)
+    
+    # ✅ إذا كان overwrite=True، نحذف الملف القديم أولاً لتجنب suffix عشوائي
+    if overwrite and default_storage.exists(file_path):
+        try:
+            default_storage.delete(file_path)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Could not delete existing file {file_path}: {e}")
     
     # حفظ الملف
     saved_path = default_storage.save(file_path, file_obj)
